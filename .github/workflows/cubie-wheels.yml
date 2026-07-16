@@ -83,9 +83,8 @@ jobs:
             --jq '.workflow_runs[].id')
           for run in $runs; do
             sha=$(gh api "repos/${UPSTREAM_REPO}/actions/runs/${run}" --jq .head_sha)
-            their_env=$(gh api \
-              "repos/${UPSTREAM_REPO}/contents/ci/llvm-version.env?ref=${sha}" \
-              --jq .content | base64 -d)
+            their_env=$(curl -fsSL \
+              "https://raw.githubusercontent.com/${UPSTREAM_REPO}/${sha}/ci/llvm-version.env")
             their_modern=$(sed -n 's/^LLVM_MODERN_COMMIT="\(.*\)"$/\1/p' <<< "$their_env")
             their_llvm7=$(sed -n 's/^LLVM7_TAG="\(.*\)"$/\1/p' <<< "$their_env")
             if [[ "$their_modern" != "$LLVM_MODERN_COMMIT" \
