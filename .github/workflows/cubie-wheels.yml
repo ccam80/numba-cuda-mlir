@@ -1,0 +1,261 @@
+# Build and publish `numba-cuda-mlir-cubie` wheels from this branch.
+#
+# This is the CuBIE fork's counterpart of build-wheel.yml. Upstream's
+# workflow runs on NVIDIA self-hosted runners and builds LLVM from
+# source with S3-backed caches; none of that infrastructure exists on
+# a personal fork. The patched wheels do not modify LLVM itself (the
+# fork's C++ changes live in cext/, which is compiled against a stock
+# LLVM install), so this workflow downloads the LLVM install
+# artifacts that NVIDIA's public CI uploads on every push to main and
+# feeds them to the same cibuildwheel invocation upstream uses, on
+# GitHub-hosted runners.
+#
+# Requirements:
+#   - The `ci/llvm-version.env` pins on this branch must match an
+#     NVIDIA CI run whose artifacts have not expired (~90-day
+#     retention, refreshed on every upstream main push). The
+#     find-llvm job locates the newest matching run automatically;
+#     pass `upstream-run-id` to override.
+#   - Cross-repository artifact downloads need a token with
+#     Actions read access on NVIDIA/numba-cuda-mlir. If the default
+#     workflow token is rejected, add a fine-grained PAT with
+#     public-repository read access as the `NVIDIA_ACTIONS_READ_TOKEN`
+#     repository secret.
+#   - Publishing needs a PyPI trusted publisher for the
+#     `numba-cuda-mlir-cubie` project pointing at this repository,
+#     workflow `cubie-wheels.yml`, environment `pypi`.
+#
+# The matrix intentionally omits the free-threaded 3.14t build:
+# CuBIE does not support free-threaded CPython.
+
+name: Build cubie wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream-run-id:
+        description: >-
+          NVIDIA CI run id supplying LLVM artifacts (blank = newest
+          run on NVIDIA main whose LLVM pins match this branch)
+        required: false
+        default: ""
+      publish:
+        description: Publish the built wheels to PyPI
+        type: boolean
+        default: false
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -xeuo pipefail {0}
+
+permissions:
+  contents: read
+
+jobs:
+  find-llvm:
+    runs-on: ubuntu-24.04
+    outputs:
+      run-id: ${{ steps.locate.outputs.run-id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+
+      - name: Locate NVIDIA CI run with matching LLVM artifacts
+        id: locate
+        env:
+          GH_TOKEN: ${{ secrets.NVIDIA_ACTIONS_READ_TOKEN || github.token }}
+          UPSTREAM_REPO: NVIDIA/numba-cuda-mlir
+        run: |
+          if [[ -n "${{ inputs.upstream-run-id }}" ]]; then
+            echo "run-id=${{ inputs.upstream-run-id }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          source ci/llvm-version.env
+          runs=$(gh api \
+            "repos/${UPSTREAM_REPO}/actions/workflows/ci.yaml/runs?branch=main&status=success&per_page=20" \
+            --jq '.workflow_runs[].id')
+          for run in $runs; do
+            sha=$(gh api "repos/${UPSTREAM_REPO}/actions/runs/${run}" --jq .head_sha)
+            their_env=$(gh api \
+              "repos/${UPSTREAM_REPO}/contents/ci/llvm-version.env?ref=${sha}" \
+              --jq .content | base64 -d)
+            their_modern=$(sed -n 's/^LLVM_MODERN_COMMIT="\(.*\)"$/\1/p' <<< "$their_env")
+            their_llvm7=$(sed -n 's/^LLVM7_TAG="\(.*\)"$/\1/p' <<< "$their_env")
+            if [[ "$their_modern" != "$LLVM_MODERN_COMMIT" \
+               || "$their_llvm7" != "$LLVM7_TAG" ]]; then
+              echo "run ${run}: LLVM pins differ, skipping"
+              continue
+            fi
+            live=$(gh api \
+              "repos/${UPSTREAM_REPO}/actions/runs/${run}/artifacts?per_page=100" \
+              --jq '[.artifacts[]
+                     | select((.name | startswith("llvm")) and (.expired | not))]
+                    | length')
+            if [[ "$live" -ge 18 ]]; then
+              echo "run ${run}: pins match, ${live} live LLVM artifacts"
+              echo "run-id=${run}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "run ${run}: only ${live} live LLVM artifacts, skipping"
+          done
+          echo "No NVIDIA CI run on main has live LLVM artifacts matching" \
+               "this branch's ci/llvm-version.env pins." >&2
+          exit 1
+
+  build:
+    needs: find-llvm
+    strategy:
+      fail-fast: false
+      matrix:
+        host-platform:
+          - linux-64
+          - linux-aarch64
+          - win-64
+        python-version:
+          - "3.11"
+          - "3.12"
+          - "3.13"
+          - "3.14"
+    name: build (${{ matrix.host-platform }}, py${{ matrix.python-version }})
+    runs-on: ${{ (matrix.host-platform == 'linux-64' && 'ubuntu-24.04') ||
+                 (matrix.host-platform == 'linux-aarch64' && 'ubuntu-24.04-arm') ||
+                 (matrix.host-platform == 'win-64' && 'windows-2022') }}
+    timeout-minutes: 300
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Determine cibuildwheel and LLVM Python tags
+        id: wheel-tags
+        run: |
+          PY_VER_FMT=$(echo "${{ matrix.python-version }}" | tr -d '.')
+          echo "llvm-py-tag=cp${PY_VER_FMT}" >> "$GITHUB_OUTPUT"
+          if [[ "${{ matrix.host-platform }}" == win* ]]; then
+            echo "cibw-build=cp${PY_VER_FMT}-win_amd64" >> "$GITHUB_OUTPUT"
+          else
+            echo "cibw-build=cp${PY_VER_FMT}-manylinux*" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download LLVM Modern artifacts from NVIDIA CI
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: llvm-modern-install-${{ steps.wheel-tags.outputs.llvm-py-tag }}-${{ matrix.host-platform }}
+          path: llvm-modern-install
+          repository: NVIDIA/numba-cuda-mlir
+          run-id: ${{ needs.find-llvm.outputs.run-id }}
+          github-token: ${{ secrets.NVIDIA_ACTIONS_READ_TOKEN || github.token }}
+
+      - name: Download LLVM 7 artifacts from NVIDIA CI
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: llvm7-install-${{ matrix.host-platform }}
+          path: llvm7-install
+          repository: NVIDIA/numba-cuda-mlir
+          run-id: ${{ needs.find-llvm.outputs.run-id }}
+          github-token: ${{ secrets.NVIDIA_ACTIONS_READ_TOKEN || github.token }}
+
+      - name: Validate LLVM artifacts
+        run: |
+          mlir_libs="llvm-modern-install/python_packages/numba_cuda_mlir_mlir/numba_cuda_mlir/_mlir/_mlir_libs"
+          if [[ "${{ matrix.host-platform }}" == win* ]]; then
+            expected=(
+              "${mlir_libs}/_mlir.${{ steps.wheel-tags.outputs.llvm-py-tag }}-win_amd64.pyd"
+              "${mlir_libs}/MLIRPythonCAPI.dll"
+              "${mlir_libs}/MLIRModernToNVVM.dll"
+              "llvm7-install/bin/LLVM-C.dll"
+            )
+          else
+            expected=(
+              "${mlir_libs}/libMLIRPythonCAPI.so"
+              "llvm7-install/lib/libLLVM-7.so"
+            )
+          fi
+          for path in "${expected[@]}"; do
+            if [[ ! -f "${path}" ]]; then
+              echo "Expected LLVM artifact not found: ${path}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Fix LLVM artifact permissions
+        if: ${{ startsWith(matrix.host-platform, 'linux') }}
+        run: |
+          chmod -R +x llvm-modern-install/bin/ llvm7-install/bin/ || true
+          chmod -R +x llvm-modern-install/lib/ llvm7-install/lib/ || true
+
+      - name: Set environment variables
+        env:
+          HOST_PLATFORM: ${{ matrix.host-platform }}
+          PY_VER: ${{ matrix.python-version }}
+          SHA: ${{ github.sha }}
+        run: ./ci/tools/env-vars build
+
+      - name: Set up MSVC
+        if: ${{ matrix.host-platform == 'win-64' }}
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756  # v1
+
+      - name: Build numba-cuda-mlir-cubie wheel
+        uses: pypa/cibuildwheel@294735312765b09d24a2fbec22660ce817587d55  # v4.1.0
+        with:
+          package-dir: .
+          output-dir: dist
+        env:
+          CIBW_BUILD: ${{ steps.wheel-tags.outputs.cibw-build }}
+          CIBW_MANYLINUX_X86_64_IMAGE: quay.io/pypa/manylinux_2_28_x86_64
+          CIBW_MANYLINUX_AARCH64_IMAGE: quay.io/pypa/manylinux_2_28_aarch64
+          CIBW_ENVIRONMENT_LINUX: >
+            MLIR_DIR=/host/${{ github.workspace }}/llvm-modern-install/lib/cmake/mlir
+            LIBLLVM7=/host/${{ github.workspace }}/llvm7-install/lib/libLLVM-7.so
+          CIBW_ENVIRONMENT_WINDOWS: >
+            MLIR_DIR="$(cygpath -w ${{ env.LLVM_MODERN_INSTALL_DIR }}/lib/cmake/mlir)"
+            LIBLLVM7="$(cygpath -w ${{ env.LLVM7_INSTALL_DIR }}/bin/LLVM-C.dll)"
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: >
+            auditwheel -v repair {wheel} --wheel-dir {dest_dir}
+            --exclude libMLIRPythonCAPI.so
+            --exclude libMLIRPythonSupport-numba_cuda_mlir.so
+            --exclude libLLVM-7.so
+          # Windows wheels are built with /MT (static CRT) upstream, so
+          # the wheel is self-contained and needs no DLL bundling.
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: ""
+
+      - name: List the built wheels
+        run: |
+          ls -lah dist/
+
+      - name: Upload wheel artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: wheels-${{ matrix.host-platform }}-${{ steps.wheel-tags.outputs.llvm-py-tag }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  publish:
+    if: ${{ inputs.publish }}
+    needs: build
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download all wheel artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+
+      - name: List wheels to publish
+        run: |
+          ls -lah dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

@@ -10,9 +10,14 @@ requires = [
 ]
 
 [project]
-name = "numba_cuda_mlir"
+# Renamed distribution of NVIDIA's numba-cuda-mlir carrying the
+# CuBIE-required native (C++) fixes that are still open as upstream
+# pull requests. The import package stays `numba_cuda_mlir`, so this
+# distribution and the stock `numba-cuda-mlir` wheel must not be
+# installed into the same environment. See NOTICE for provenance.
+name = "numba-cuda-mlir-cubie"
 dynamic = ["version",]
-description = "numba-cuda-mlir Python Compiler"
+description = "numba-cuda-mlir Python Compiler (CuBIE patched build)"
 readme = { file = "README.md", content-type = "text/markdown" }
 authors = [
     { name = "NVIDIA Corporation" }
