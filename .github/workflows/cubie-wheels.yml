@@ -31,6 +31,13 @@
 name: Build cubie wheels
 
 on:
+  # Pushes build the full wheel matrix (no publish); publishing is
+  # workflow_dispatch-only. The push trigger also registers the
+  # workflow so it can be dispatched without living on the default
+  # branch.
+  push:
+    branches:
+      - cubie-wheel
   workflow_dispatch:
     inputs:
       upstream-run-id:
