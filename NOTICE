@@ -2,7 +2,7 @@ numba-cuda-mlir
 Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 --------------------------------------------------------------------------------
-This distribution (`numba-cuda-mlir-cubie`) is a modified build of NVIDIA's
+This distribution (`cubie-numba-cuda-mlir`) is a modified build of NVIDIA's
 numba-cuda-mlir, produced by the CuBIE project
 (https://github.com/ccam80/cubie) from the `cubie-wheel` branch of
 https://github.com/ccam80/numba-cuda-mlir. It is not published or endorsed

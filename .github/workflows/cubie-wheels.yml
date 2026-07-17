@@ -1,4 +1,4 @@
-# Build and publish `numba-cuda-mlir-cubie` wheels from this branch.
+# Build and publish `cubie-numba-cuda-mlir` wheels from this branch.
 #
 # This is the CuBIE fork's counterpart of build-wheel.yml. Upstream's
 # workflow runs on NVIDIA self-hosted runners and builds LLVM from
@@ -22,7 +22,7 @@
 #     public-repository read access as the `NVIDIA_ACTIONS_READ_TOKEN`
 #     repository secret.
 #   - Publishing needs a PyPI trusted publisher for the
-#     `numba-cuda-mlir-cubie` project pointing at this repository,
+#     `cubie-numba-cuda-mlir` project pointing at this repository,
 #     workflow `cubie-wheels.yml`, environment `pypi`.
 #
 # The matrix intentionally omits the free-threaded 3.14t build:
@@ -207,7 +207,7 @@ jobs:
         if: ${{ matrix.host-platform == 'win-64' }}
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756  # v1
 
-      - name: Build numba-cuda-mlir-cubie wheel
+      - name: Build cubie-numba-cuda-mlir wheel
         uses: pypa/cibuildwheel@294735312765b09d24a2fbec22660ce817587d55  # v4.1.0
         with:
           package-dir: .
