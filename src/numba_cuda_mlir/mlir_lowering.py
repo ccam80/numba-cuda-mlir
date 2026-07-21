@@ -1298,6 +1298,16 @@ extern "C" __global__ void
                 )
 
                 return materialize_string_constant(self.mlir_gpu_module, value)
+            case slice():
+                from numba_cuda_mlir.lowering.numpy import Slice
+
+                # Materialize frozen slices like inline slices.
+                return Slice(
+                    *(
+                        self.lower_literal_if_needed(bound) if bound is not None else None
+                        for bound in (value.start, value.stop, value.step)
+                    )
+                )
             case _:
                 return value
 
@@ -2354,7 +2364,17 @@ extern "C" __global__ void
         bytes_op = arith.constant(result=T.index(), value=bytes)
         shm_base = self._get_shared_memory_base()
         total_shared_memory_bytes = self._load_total_shared_memory_bytes()
-        dynamic_shared_bytes = memref.dim(shm_base, index_of(0))
+        # memref.dim on gpu.dynamic_shared_memory reads zero at runtime, so
+        # take the region's true size from the %dynamic_smem_size register,
+        # the way numba-cuda sizes shared.array(0). NVVM has no intrinsic
+        # for the register, so it is read with inline assembly.
+        smem_size = llvm.inline_asm(
+            T.i32(),
+            [],
+            "mov.u32 $0, %dynamic_smem_size;",
+            "=r",
+        )
+        dynamic_shared_bytes = self.mlir_convert(smem_size, T.index())
         remaining_bytes = arith.subi(lhs=dynamic_shared_bytes, rhs=total_shared_memory_bytes)
         size = arith.divui(lhs=remaining_bytes, rhs=bytes_op)
         view = memref.view(

@@ -192,10 +192,36 @@ def _resolve_shared_bit_storage_float_accesses(module: ir.Module):
         op.operation.erase()
 
 
+def _externalize_dynamic_shared_globals(module: ir.Module):
+    """Give dynamic shared memory globals external linkage.
+
+    The GPU-to-LLVM conversion emits ``__dynamic_shmem__*`` as internal
+    zero-length arrays. With internal linkage the optimizer may assume the
+    object really is zero bytes long, making every indexed access out of
+    bounds and deleting stores staged through the region. External linkage
+    makes the size unknown and restores conservative aliasing, matching
+    CUDA C's ``extern __shared__`` declaration.
+    """
+    external = ir.Attribute.parse("#llvm.linkage<external>")
+
+    def walk(op):
+        for region in op.regions:
+            for block in region.blocks:
+                for child in block.operations:
+                    if child.operation.name == "llvm.mlir.global":
+                        sym = str(child.attributes["sym_name"])
+                        if "__dynamic_shmem__" in sym:
+                            child.attributes["linkage"] = external
+                    walk(child.operation)
+
+    walk(module.operation)
+
+
 def run_pre_codegen_patterns(module: ir.Module):
     fixup_nvvm_arg_attrs(module.operation)
     _resolve_exotic_float_casts(module)
     _resolve_shared_bit_storage_float_accesses(module)
+    _externalize_dynamic_shared_globals(module)
     # TODO(ajm): why does this not trigger?
     # patterns = RewritePatternSet()
     # patterns.add(gpu.GPUFuncOp, fixup_nvvm_arg_attrs)
