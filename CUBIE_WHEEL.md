@@ -19,11 +19,15 @@ the fork-side runbook.
 
    | Upstream PR | Branch | Binary target |
    |---|---|---|
-   | NVIDIA#217 | `fix-llvm70-lit-checks` | MLIRToLLVM70 |
-   | NVIDIA#219 | `fix-llvm70-nvvm-ir-version` | MLIRToLLVM70 |
    | NVIDIA#221 | `selective-fastmath-pr` | MLIRToLLVM70 |
    | NVIDIA#225 | `fix-lineinfo-multi-file-pr` | MLIRToLLVM70 |
-   | NVIDIA#233 | `fix-async-launch-raise-free-kernels-pr` | `_cext` launcher |
+
+   Retired from the union (0.4.2.1): NVIDIA#217 merged upstream in
+   0.4.2; NVIDIA#233 was superseded by upstream #235 (merged, same
+   debug-gated readback); NVIDIA#219 was closed upstream and only
+   fixed the standalone `translateToPTX` C++ path — the Python
+   compile path supplies NVVM IR versions itself, so the wheel never
+   needed it at runtime.
 
    Python-side upstream PRs stay **out** of this branch: cubie
    applies those at runtime via `cubie._mlir_compat`, which
@@ -59,9 +63,7 @@ knot:
 
 ```bash
 git checkout -b cubie-wheel-next upstream/main
-for b in fix-llvm70-lit-checks fix-llvm70-nvvm-ir-version \
-         selective-fastmath-pr fix-lineinfo-multi-file-pr \
-         fix-async-launch-raise-free-kernels-pr; do
+for b in selective-fastmath-pr fix-lineinfo-multi-file-pr; do
   git merge --no-edit origin/$b
 done
 git cherry-pick <packaging commits from old cubie-wheel>
