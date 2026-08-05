@@ -7,7 +7,7 @@ numba-cuda-mlir, produced by the CuBIE project
 (https://github.com/ccam80/cubie) from the `cubie-wheel` branch of
 https://github.com/ccam80/numba-cuda-mlir. It is not published or endorsed
 by NVIDIA. The modifications are the native-code (C++) fixes submitted to
-NVIDIA/numba-cuda-mlir as pull requests #217, #219, #221, #225, and #233;
+NVIDIA/numba-cuda-mlir as pull requests #221 and #225;
 the branch is otherwise identical to the upstream base recorded in the
 release notes of each build. The import package remains `numba_cuda_mlir`.
 --------------------------------------------------------------------------------
