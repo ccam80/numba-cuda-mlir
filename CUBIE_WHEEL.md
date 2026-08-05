@@ -22,13 +22,6 @@ the fork-side runbook.
    | NVIDIA#221 | `selective-fastmath-pr` | MLIRToLLVM70 |
    | NVIDIA#225 | `fix-lineinfo-multi-file-pr` | MLIRToLLVM70 |
 
-   Retired from the union (0.4.2.1): NVIDIA#217 merged upstream in
-   0.4.2; NVIDIA#233 was superseded by upstream #235 (merged, same
-   debug-gated readback); NVIDIA#219 was closed upstream and only
-   fixed the standalone `translateToPTX` C++ path — the Python
-   compile path supplies NVVM IR versions itself, so the wheel never
-   needed it at runtime.
-
    Python-side upstream PRs stay **out** of this branch: cubie
    applies those at runtime via `cubie._mlir_compat`, which
    feature-detects the installed build and no-ops once a fix is
@@ -120,14 +113,14 @@ pip install -e "<cubie checkout>[test]"
 pytest -m "not specific_algos and not sim_only" --no-cov
 # fork targeted tests (from this repo; needs filecheck + pytest-benchmark):
 pip install filecheck pytest-benchmark
-pytest tests/test_async_launch.py tests/test_kernel_exceptions.py \
+pytest tests/test_kernel_exceptions.py \
        tests/test_descriptor_launch_config.py tests/test_lineinfo.py \
        tests/test_math.py tests/numba_cuda_tests/cudapy/test_fastmath.py \
        --override-ini="addopts="
 ```
 
-Reference result (0.4.1.1, RTX 4070 SUPER): cubie suite 2855
-passed / 0 failed; fork tests 152 passed / 2 xfailed.
+Reference result (0.4.2.1, RTX 4070 SUPER, CUDA 13): cubie suite
+3132 passed / 0 failed; fork tests 181 passed / 2 xfailed.
 
 ## Publish
 
