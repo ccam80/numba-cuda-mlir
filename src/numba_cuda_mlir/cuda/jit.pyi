@@ -47,6 +47,7 @@ def jit(
     signature: (
         tuple | list | str
     ) = None,  # Function signature to compile for. Setting to 'infer' will infer the signature from the type annotations of the arguments
+    spill_to_shared_memory: bool = False,  # Spill registers to shared memory before local memory (requires CUDA 13 and lto=True)
 ) -> MLIRDispatcher:
     """
     numba_cuda_mlir JIT decorator. Use this function to decorate kernels and device functions.

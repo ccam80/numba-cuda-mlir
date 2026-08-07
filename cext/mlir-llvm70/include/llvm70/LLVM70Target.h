@@ -42,6 +42,8 @@ struct LLVM70Options {
   std::string triple = "nvptx64-nvidia-cuda";
   unsigned optLevel = 2;    // libnvvm optimization level (0–3)
   bool genLTO = false;      // Pass -gen-lto to produce LTOIR instead of PTX
+  // Emit .pragma "enable_smem_spilling" in kernels (CUDA 13)
+  bool spillToShared = false;
   // Debug/lineinfo level: 0=none, 1=lineinfo (.file/.loc only), 2=full debug
   int debugLevel = 1;
   int nvvmIRMajor = 2;
@@ -75,6 +77,9 @@ public:
 
 private:
   LLVM70IRBuilder &b;
+
+  // Options for the current translate() invocation (may be null).
+  const LLVM70Options *currentOpts = nullptr;
 
   // MLIR Value → old LLVMValueRef
   llvm::DenseMap<mlir::Value, LLVMValueRef> valueMap;

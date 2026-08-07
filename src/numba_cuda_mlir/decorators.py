@@ -79,6 +79,14 @@ def _verify_shared_memory_carveout(value: Any, targetoptions: dict[str, Any]) ->
     raise TypeError(f"shared_memory_carveout must be str or int, got {type(value).__name__}")
 
 
+def _verify_spill_to_shared_memory(value: Any, targetoptions: dict[str, Any]) -> str | None:
+    if value and targetoptions.get("debug"):
+        return "spill_to_shared_memory is not supported with debug=True (ptxas rejects the pragma in device-debug compilation)"
+    if value and not targetoptions.get("lto"):
+        return "spill_to_shared_memory requires lto=True (ptxas allows the pragma only in whole-program compilation)"
+    return None
+
+
 def _verify_launch_bounds(value: Any, targetoptions: dict[str, Any]) -> str | None:
     if value is None:
         return None
@@ -356,6 +364,13 @@ def _get_schema() -> tuple[MLIRJITOption, ...]:
             default_value=None,
             help="Shared memory carveout percentage (-1 to 100, or 'default'/'maxl1'/'maxshared')",
             extra_verification=_verify_shared_memory_carveout,
+        ),
+        MLIRJITOption(
+            name="spill_to_shared_memory",
+            types=bool,
+            default_value=False,
+            help="Spill registers to shared memory before local memory (requires CUDA 13 and lto=True)",
+            extra_verification=_verify_spill_to_shared_memory,
         ),
         MLIRJITOption(
             name="profile_jit",

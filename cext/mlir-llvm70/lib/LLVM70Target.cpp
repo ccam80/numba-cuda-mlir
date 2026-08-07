@@ -273,6 +273,7 @@ void MLIRToLLVM70::setDebugLocFromOp(Operation *op) {
 llvm::Error MLIRToLLVM70::translate(gpu::GPUModuleOp gpuMod, int debugLevel,
                                     bool omitDebugInfoVersionFlag,
                                     const LLVM70Options *opts) {
+  currentOpts = opts;
   bool needFullDebug = (debugLevel >= 2);
   if (debugLevel > 0) {
     // Upgrade to FullDebug when the IR contains debug variable intrinsics
@@ -470,6 +471,17 @@ llvm::Error MLIRToLLVM70::translateFuncOp(Operation *op) {
   Block &entryBlock = funcOp.getBody().front();
   for (auto [i, arg] : llvm::enumerate(entryBlock.getArguments()))
     mapValue(arg, b.getParam(fn, i));
+
+  // Emit .pragma "enable_smem_spilling" first in the kernel entry block.
+  if (currentOpts && currentOpts->spillToShared &&
+      funcOp->hasAttr("gpu.kernel")) {
+    LLVMTypeRef fnTy = b.funcTy(b.voidTy(), nullptr, 0, /*varArg=*/false);
+    LLVMValueRef pragmaAsm =
+        b.constInlineAsm(fnTy, ".pragma \"enable_smem_spilling\";", "",
+                         /*hasSideEffects=*/true, /*isAlignStack=*/false);
+    b.positionAtEnd(blockMap[&entryBlock]);
+    b.buildCall(pragmaAsm, nullptr, 0, "");
+  }
 
   // Translate each block
   for (Block &block : funcOp.getBody()) {

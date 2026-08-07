@@ -150,6 +150,7 @@ def _get_llvm70_capi():
         ctypes.c_int,  # gen_lto
         ctypes.c_int,  # opt_level
         ctypes.c_int,  # gen_lineinfo
+        ctypes.c_int,  # spill_to_shared
         ctypes.c_int,  # nvvm_ir_major
         ctypes.c_int,  # nvvm_ir_minor
         ctypes.c_int,  # nvvm_dbg_major
@@ -249,6 +250,7 @@ def _call_llvm70_capi(module, target_options, gen_lto=False) -> bytes:
         1 if gen_lto else 0,
         opt_level,
         debug_level,
+        1 if _smem_spill_enabled(target_options) else 0,
         nvvm_ir_version[0],
         nvvm_ir_version[1],
         nvvm_ir_version[2],
@@ -269,6 +271,40 @@ def _call_llvm70_capi(module, target_options, gen_lto=False) -> bytes:
     return result
 
 
+def _smem_spill_enabled(target_options) -> bool:
+    """Return True when spill_to_shared_memory is requested; reject CUDA < 13."""
+    if not target_options or not target_options.get("spill_to_shared_memory"):
+        return False
+    from numba_cuda_mlir.tools import get_cuda_runtime_version
+
+    version = get_cuda_runtime_version()
+    if version < (13, 0):
+        raise RuntimeError(
+            f"spill_to_shared_memory requires CUDA 13.0 or later (found {version[0]}.{version[1]})"
+        )
+    return True
+
+
+def _inject_smem_spill_pragma(gpu_mod):
+    """Insert .pragma "enable_smem_spilling" first in each kernel entry block."""
+    for func in gpu_mod.operation.regions[0].blocks[0].operations:
+        op = func.operation
+        if op.name != "llvm.func" or "gpu.kernel" not in op.attributes:
+            continue
+        blocks = op.regions[0].blocks
+        if len(blocks) == 0:
+            continue
+        with ir.InsertionPoint.at_block_begin(blocks[0]), ir.Location.unknown():
+            ir.Operation.create(
+                "llvm.inline_asm",
+                attributes={
+                    "asm_string": ir.StringAttr.get('.pragma "enable_smem_spilling";'),
+                    "constraints": ir.StringAttr.get(""),
+                    "has_side_effects": ir.UnitAttr.get(),
+                },
+            )
+
+
 def _operation_to_text(operation, *, preserve_debug_info=False) -> str:
     if not preserve_debug_info:
         return str(operation)
@@ -277,7 +313,7 @@ def _operation_to_text(operation, *, preserve_debug_info=False) -> str:
         return sb.getvalue()
 
 
-def _prepare_llvm_ir(module, dump=False, preserve_debug_info=False) -> bytes:
+def _prepare_llvm_ir(module, dump=False, preserve_debug_info=False, target_options=None) -> bytes:
     """Translate gpu.module to LLVM IR and apply libnvvm compatibility downgrades."""
     from numba_cuda_mlir._mlir.dialects import gpu
     from numba_cuda_mlir.tools import get_cuda_runtime_version
@@ -287,6 +323,8 @@ def _prepare_llvm_ir(module, dump=False, preserve_debug_info=False) -> bytes:
         raise ValueError(f"Expected exactly one gpu.module, found {len(gpu_modules)}")
 
     gpu_mod = gpu_modules[0]
+    if _smem_spill_enabled(target_options):
+        _inject_smem_spill_pragma(gpu_mod)
     gpu_mod.operation.attributes["llvm.data_layout"] = ir.StringAttr.get(NVPTX64_DATALAYOUT)
     gpu_mod.operation.attributes["llvm.target_triple"] = ir.StringAttr.get(NVPTX64_TRIPLE)
     ctk_major, ctk_minor = get_cuda_runtime_version()
@@ -384,6 +422,7 @@ def _get_ltoir(cres, target_options) -> bytes:
                 dump=target_options.get("dump_llvmir", False),
                 preserve_debug_info=target_options.get("debug", False)
                 or target_options.get("lineinfo", False),
+                target_options=target_options,
             )
             from numba_cuda_mlir.numba_cuda.cudadrv.nvvm import LibDevice
 
@@ -422,6 +461,7 @@ def get_ptx(cres, target_options=None) -> str:
                 dump=target_options.get("dump_llvmir", False),
                 preserve_debug_info=target_options.get("debug", False)
                 or target_options.get("lineinfo", False),
+                target_options=target_options,
             )
             from numba_cuda_mlir.numba_cuda.cudadrv.nvvm import LibDevice
 
@@ -662,6 +702,7 @@ def optimize(cres):
                 dump=target_options.get("dump_llvmir", False),
                 preserve_debug_info=target_options.get("debug", False)
                 or target_options.get("lineinfo", False),
+                target_options=target_options,
             )
 
         base_linker = cres.metadata["linker"]

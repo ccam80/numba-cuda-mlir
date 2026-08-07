@@ -171,8 +171,10 @@ std::optional<SmallVector<char, 0>> LLVM70TargetAttrImpl::serializeToObject(
   constexpr StringLiteral kIRDumpFlag("--llvm70-ir-dump=");
   constexpr StringLiteral kIRStderrFlag("--llvm70-ir-stderr");
   constexpr StringLiteral kChipFlag("--llvm70-chip=");
+  constexpr StringLiteral kSpillToSharedFlag("--llvm70-spill-to-shared");
   bool dumpIRToFile = cmdOpts.contains(kIRDumpFlag);
   bool dumpIRToStderr = cmdOpts.contains(kIRStderrFlag);
+  opts.spillToShared = cmdOpts.contains(kSpillToSharedFlag);
 
   // --chip override from cmdOptions or LLVM70_CHIP env var.
   if (cmdOpts.contains(kChipFlag)) {
