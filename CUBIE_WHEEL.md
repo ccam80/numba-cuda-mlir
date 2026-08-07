@@ -19,7 +19,7 @@ the fork-side runbook.
 
    | Upstream PR | Branch | Binary target |
    |---|---|---|
-   | NVIDIA#221 | `selective-fastmath-pr` | MLIRToLLVM70 |
+   | NVIDIA#255 | `selective-fastmath` | MLIRToLLVM70 |
    | NVIDIA#225 | `fix-lineinfo-multi-file-pr` | MLIRToLLVM70 |
 
    Python-side upstream PRs stay **out** of this branch: cubie
@@ -56,7 +56,7 @@ knot:
 
 ```bash
 git checkout -b cubie-wheel-next upstream/main
-for b in selective-fastmath-pr fix-lineinfo-multi-file-pr; do
+for b in selective-fastmath fix-lineinfo-multi-file-pr; do
   git merge --no-edit origin/$b
 done
 git cherry-pick <packaging commits from old cubie-wheel>
