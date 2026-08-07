@@ -36,6 +36,7 @@ class FastMathOptions(AbstractOptionValue):
             "contract",
             "afn",
             "reassoc",
+            "ftz",
         }
 
         if isinstance(value, FastMathOptions):

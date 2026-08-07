@@ -68,7 +68,6 @@ def get_base_pipeline():
       convert-func-to-llvm{index-bitwidth=0 use-bare-ptr-memref-call-conv=false},
       expand-strided-metadata,
       lower-affine,
-      math-uplift-to-fma,
       gpu.module(
         convert-gpu-to-nvvm{ has-redux=false index-bitwidth=64 use-bare-ptr-memref-call-conv=false}
       ),
@@ -150,6 +149,7 @@ def _get_llvm70_capi():
         ctypes.c_int,  # gen_lto
         ctypes.c_int,  # opt_level
         ctypes.c_int,  # gen_lineinfo
+        ctypes.c_char_p,  # nvvm_options
         ctypes.c_int,  # nvvm_ir_major
         ctypes.c_int,  # nvvm_ir_minor
         ctypes.c_int,  # nvvm_dbg_major
@@ -157,9 +157,6 @@ def _get_llvm70_capi():
         ctypes.POINTER(ctypes.c_char_p),  # out
         ctypes.POINTER(ctypes.c_size_t),  # out_len
         ctypes.POINTER(ctypes.c_char_p),  # err_out
-        # Deliberately last (matches CAPI.cpp): a stale library ignores a
-        # trailing argument, so the output pointers never shift.
-        ctypes.c_char_p,  # nvvm_options (space-separated, e.g. "-prec-div=0")
     ]
     lib.llvm70_free.restype = None
     lib.llvm70_free.argtypes = [ctypes.c_void_p]
@@ -242,18 +239,17 @@ def _call_llvm70_capi(module, target_options, gen_lto=False) -> bytes:
     out_len = ctypes.c_size_t()
     err_out = ctypes.c_char_p()
 
-    # Same per-flag knob gating as _nvvm_options, rendered as
-    # nvvmCompileProgram command-line options.
+    # Module flags rendered as nvvmCompileProgram options.
     from numba_cuda_mlir.fastmath import nvvm_fastmath_options
 
-    knobs = nvvm_fastmath_options(target_options.get("fastmath", False))
+    module_flags = nvvm_fastmath_options(target_options.get("fastmath", False))
     nvvm_extra_options = [
         f"-{name.replace('_', '-')}={1 if enabled else 0}"
         for name, enabled in (
-            ("ftz", knobs.get("ftz")),
-            ("fma", knobs.get("fma")),
-            ("prec_div", knobs.get("prec_div")),
-            ("prec_sqrt", knobs.get("prec_sqrt")),
+            ("ftz", module_flags.get("ftz")),
+            ("fma", module_flags.get("fma")),
+            ("prec_div", module_flags.get("prec_div")),
+            ("prec_sqrt", module_flags.get("prec_sqrt")),
         )
         if enabled is not None
     ]
@@ -269,6 +265,7 @@ def _call_llvm70_capi(module, target_options, gen_lto=False) -> bytes:
         1 if gen_lto else 0,
         opt_level,
         debug_level,
+        nvvm_options_arg,
         nvvm_ir_version[0],
         nvvm_ir_version[1],
         nvvm_ir_version[2],
@@ -276,7 +273,6 @@ def _call_llvm70_capi(module, target_options, gen_lto=False) -> bytes:
         ctypes.byref(out),
         ctypes.byref(out_len),
         ctypes.byref(err_out),
-        nvvm_options_arg,
     )
 
     if rc != 0:
@@ -574,7 +570,7 @@ def get_lto_ptx(cres, linker=None, target_options=None) -> str:
 
         from numba_cuda_mlir.fastmath import nvvm_fastmath_options
 
-        knobs = nvvm_fastmath_options(target_options.get("fastmath", False))
+        module_flags = nvvm_fastmath_options(target_options.get("fastmath", False))
         linker = Linker(
             cc=cc,
             arch=arch,
@@ -582,10 +578,10 @@ def get_lto_ptx(cres, linker=None, target_options=None) -> str:
             debug=target_options.get("debug", False),
             lineinfo=target_options.get("lineinfo", False),
             lto=True,
-            ftz=knobs.get("ftz"),
-            prec_div=knobs.get("prec_div"),
-            prec_sqrt=knobs.get("prec_sqrt"),
-            fma=knobs.get("fma"),
+            ftz=module_flags.get("ftz"),
+            prec_div=module_flags.get("prec_div"),
+            prec_sqrt=module_flags.get("prec_sqrt"),
+            fma=module_flags.get("fma"),
             optimization_level=int(target_options.get("opt_level", 3)),
             ptxas_options=target_options.get("ptxas_options", None),
             max_registers=target_options.get("max_registers", None),

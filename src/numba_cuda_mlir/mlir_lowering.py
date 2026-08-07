@@ -163,6 +163,15 @@ class MLIRLower(object):
             ptxas_options=self.targetoptions.get("ptxas_options", None),
             max_registers=self.targetoptions.get("max_registers", None),
         )
+        from numba_cuda_mlir.fastmath import nvvm_fastmath_options
+
+        module_flags = nvvm_fastmath_options(self.targetoptions.get("fastmath", False))
+        self._linker_config.update(
+            ftz=module_flags.get("ftz"),
+            prec_div=module_flags.get("prec_div"),
+            prec_sqrt=module_flags.get("prec_sqrt"),
+            fma=module_flags.get("fma"),
+        )
         self._seen_mlir_libraries = set()
         self._cloned_device_funcs: set[str] = set()
         self._linked_external_items = set()
@@ -376,10 +385,7 @@ class MLIRLower(object):
             numba_cuda_mlir_context._compilation_options.reset(token)
 
     def _apply_fastmath_flags(self):
-        """Stamp per-op ``#arith.fastmath`` attributes and rewrite f32
-        tanh. Runs before ``lower_capi_thunks`` so the C-ABI clone
-        inherits the attributes.
-        """
+        """Stamp per-op ``#arith.fastmath`` attributes and rewrite f32 tanh."""
         from numba_cuda_mlir.fastmath import (
             apply_fastmath_to_function,
             rewrite_approx_tanh,
@@ -522,8 +528,7 @@ extern "C" __global__ void
             from numba_cuda_mlir.fastmath import parse_fastmath
 
             fastmath = parse_fastmath(self.targetoptions.get("fastmath", False))
-            # The module-level target flag is all-or-nothing; selective
-            # subsets are expressed per-op via #arith.fastmath attributes.
+            # The target flag is all-or-nothing; subsets are per-op attributes.
             if "fast" in fastmath.flags:
                 flags.extend(["fast"])
             features = self.targetoptions.get("features", "")

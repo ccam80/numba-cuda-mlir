@@ -1,17 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Selective fastmath support.
-
-``fastmath`` accepts a bool or a set/dict of LLVM fast-math flags, applied
-per-operation as ``#arith.fastmath<...>`` attributes and carried through
-the conversion passes to libnvvm. Three effects need separate handling:
-the module-level libnvvm/ptxas knobs (:func:`nvvm_fastmath_options`), the
-f32 division rewrite to ``__nv_fast_fdividef`` (libnvvm does not select
-``div.approx`` from instruction flags), and the f32 tanh rewrite
-(:func:`rewrite_approx_tanh`), which must run before convert-math-to-nvvm
-drops the attribute.
-"""
+"""Per-op ``#arith.fastmath`` stamping, module-level libnvvm/ptxas flags, and f32 div/tanh rewrites."""
 
 import inspect
 from functools import cache
@@ -19,8 +9,10 @@ from functools import cache
 from numba_cuda_mlir._mlir import ir
 from numba_cuda_mlir.numba_cuda.core.options import FastMathOptions
 
-# Canonical flag order used by the MLIR arith fastmath attribute printer.
+# Flag order used by the attribute printer.
 _FLAG_ORDER = ("reassoc", "nnan", "ninf", "nsz", "arcp", "contract", "afn")
+
+_MODULE_ONLY_FLAGS = frozenset({"ftz"})
 
 
 def parse_fastmath(value) -> FastMathOptions:
@@ -30,15 +22,10 @@ def parse_fastmath(value) -> FastMathOptions:
 
 
 def nvvm_fastmath_options(fastmath) -> dict:
-    """Map a fastmath flag set to the libnvvm/ptxas knobs it implies.
-
-    A key is absent when the flags do not speak to that knob (the caller
-    keeps the toolchain default). ftz has no per-instruction flag, so
-    only full ``fast`` enables it.
-    """
+    """Module-level libnvvm/ptxas flags; absent keys keep toolchain defaults."""
     flags = parse_fastmath(fastmath).flags
     opts = {}
-    if "fast" in flags:
+    if flags & {"ftz", "fast"}:
         opts["ftz"] = True
     if flags & {"contract", "fast"}:
         opts["fma"] = True
@@ -51,9 +38,7 @@ def nvvm_fastmath_options(fastmath) -> dict:
 
 @cache
 def _fastmath_capable_op_names() -> frozenset:
-    """Names of arith/math dialect operations that carry a ``fastmath``
-    attribute (i.e. implement ArithFastMathInterface), discovered from the
-    generated Python bindings so the set tracks the bundled MLIR version."""
+    """arith/math op names carrying a ``fastmath`` attribute, discovered from the generated bindings."""
     from numba_cuda_mlir._mlir.dialects import _arith_ops_gen, _math_ops_gen
 
     names = set()
@@ -69,12 +54,11 @@ def _fastmath_capable_op_names() -> frozenset:
 
 
 def fastmath_attr(flags: set) -> ir.Attribute:
-    """Build an ``#arith.fastmath<...>`` attribute for the given flag set.
-    Must be called with an active MLIR context."""
+    """Build an ``#arith.fastmath<...>`` attribute; needs an active MLIR context."""
     if "fast" in flags:
-        mnemonic = "fast"
-    else:
-        mnemonic = ",".join(f for f in _FLAG_ORDER if f in flags)
+        # fast keeps NaN/Inf checks intact, as CUDA fast math does; nnan/ninf apply only when named.
+        flags = (flags - {"fast"}) | (set(_FLAG_ORDER) - {"nnan", "ninf"})
+    mnemonic = ",".join(f for f in _FLAG_ORDER if f in flags)
     assert mnemonic, f"no valid fastmath flags in {flags}"
     return ir.Attribute.parse(f"#arith.fastmath<{mnemonic}>")
 
@@ -88,11 +72,8 @@ def _chip_number(chip) -> int:
 
 
 def apply_fastmath_to_function(func_op, fastmath) -> None:
-    """Stamp the fastmath attribute onto every fastmath-capable op nested
-    in ``func_op``. Device callees are cloned in already stamped under
-    their own options, so flags scope per function.
-    """
-    flags = parse_fastmath(fastmath).flags
+    """Stamp the fastmath attribute onto every fastmath-capable op nested in ``func_op``."""
+    flags = parse_fastmath(fastmath).flags - _MODULE_ONLY_FLAGS
     if not flags:
         return
 
@@ -108,10 +89,7 @@ def apply_fastmath_to_function(func_op, fastmath) -> None:
 
 
 def rewrite_approx_tanh(func_op, fastmath, chip=None) -> None:
-    """Replace f32 ``math.tanh`` with ``tanh.approx.f32`` under ``afn`` or
-    ``fast`` on sm_75+, as numba-cuda does. Must run before
-    convert-math-to-nvvm, which drops the fastmath attribute.
-    """
+    """Replace f32 ``math.tanh`` with ``tanh.approx.f32`` under ``afn``/``fast`` on sm_75+; runs before convert-math-to-nvvm drops the attribute."""
     from numba_cuda_mlir._mlir.dialects import llvm
 
     flags = parse_fastmath(fastmath).flags
