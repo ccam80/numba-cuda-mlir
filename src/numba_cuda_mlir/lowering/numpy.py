@@ -891,8 +891,7 @@ def resolve_slice(builder, slc: Slice, mr: ir.Value, dim_index: int = 0):
             with scf.if_ctx_manager(is_zero):
                 set_error_code_if_zero(error_memref, KERNEL_ERROR_CODES[ValueError])
                 scf.yield_([])
-        # A flagged zero step still reaches the length division below;
-        # substitute one so the computation stays defined.
+        # The flagged zero step still reaches the length division; substitute one.
         step = arith.select(is_zero, one, step)
 
     is_negative_step = arith.cmpi(arith.CmpIPredicate.slt, step, zero)

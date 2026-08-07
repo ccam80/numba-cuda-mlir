@@ -193,15 +193,7 @@ def _resolve_shared_bit_storage_float_accesses(module: ir.Module):
 
 
 def _externalize_dynamic_shared_globals(module: ir.Module):
-    """Give dynamic shared memory globals external linkage.
-
-    The GPU-to-LLVM conversion emits ``__dynamic_shmem__*`` as internal
-    zero-length arrays. With internal linkage the optimizer may assume the
-    object really is zero bytes long, making every indexed access out of
-    bounds and deleting stores staged through the region. External linkage
-    makes the size unknown and restores conservative aliasing, matching
-    CUDA C's ``extern __shared__`` declaration.
-    """
+    """Externalize the zero-length ``__dynamic_shmem__*`` globals so their size is unknown to the optimizer, as with CUDA C's ``extern __shared__``."""
     external = ir.Attribute.parse("#llvm.linkage<external>")
 
     def walk(op):

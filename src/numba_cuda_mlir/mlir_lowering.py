@@ -2364,10 +2364,7 @@ extern "C" __global__ void
         bytes_op = arith.constant(result=T.index(), value=bytes)
         shm_base = self._get_shared_memory_base()
         total_shared_memory_bytes = self._load_total_shared_memory_bytes()
-        # memref.dim on gpu.dynamic_shared_memory reads zero at runtime, so
-        # take the region's true size from the %dynamic_smem_size register,
-        # the way numba-cuda sizes shared.array(0). NVVM has no intrinsic
-        # for the register, so it is read with inline assembly.
+        # %dynamic_smem_size via inline asm; memref.dim reads zero at runtime.
         smem_size = llvm.inline_asm(
             T.i32(),
             [],
