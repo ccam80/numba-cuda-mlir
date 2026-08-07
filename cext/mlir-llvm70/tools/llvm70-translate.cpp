@@ -75,10 +75,6 @@ static cl::opt<std::string>
     chipOverride("chip",
                  cl::desc("Override the SM architecture (e.g. sm_80)"),
                  cl::value_desc("sm_XX"), cl::init(""));
-static cl::opt<bool> spillToShared(
-    "spill-to-shared",
-    cl::desc("Emit .pragma \"enable_smem_spilling\" in kernels (CUDA 13)"),
-    cl::init(false));
 
 int main(int argc, char **argv) {
   InitLLVM initLLVM(argc, argv);
@@ -118,8 +114,6 @@ int main(int argc, char **argv) {
     cmdOpts += " --llvm70-ir-stderr";
   if (!chipOverride.empty())
     cmdOpts += " --llvm70-chip=" + chipOverride;
-  if (spillToShared)
-    cmdOpts += " --llvm70-spill-to-shared";
 
   auto ptxCallback = [&](StringRef ptx) {
     if (!ptxDumpPath.empty()) {

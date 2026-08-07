@@ -36,6 +36,43 @@ def test_pragma_in_lto_ptx_and_kernel_runs():
     assert '.pragma "enable_smem_spilling";' in lto_ptx
 
 
+def _register_pressure_kernel(spill):
+    """Build a kernel with 96 accumulators live across a loop; launch_bounds=1024 caps registers at 64 and forces spills."""
+    n = 96
+    lines = ["def kernel(arr, out):", "    i = cuda.grid(1)"]
+    lines += [f"    a{k} = 0.0" for k in range(n)]
+    lines += ["    for j in range(arr.size):", "        v = arr[j]"]
+    lines += [f"        a{k} += v * {k + 1}.0" for k in range(n)]
+    total = " + ".join(f"a{k}" for k in range(n))
+    lines += ["    if i < out.size:", f"        out[i] = {total}"]
+    ns = {"cuda": cuda}
+    exec(compile("\n".join(lines), "<pressure>", "exec"), ns)
+    kwargs = dict(lto=True, launch_bounds=1024)
+    if spill:
+        kwargs["spill_to_shared_memory"] = True
+    return cuda.jit(**kwargs)(ns["kernel"]), 64.0 * sum(range(1, n + 1))
+
+
+@requires_cuda13
+def test_spills_land_in_shared_memory_on_device():
+    results = {}
+    for spill in (False, True):
+        kernel, expected = _register_pressure_kernel(spill)
+        arr = cuda.to_device(np.ones(64, dtype=np.float64))
+        out = cuda.device_array(1024, dtype=np.float64)
+        kernel[1, 1024](arr, out)
+        np.testing.assert_allclose(out.copy_to_host(), np.full(1024, expected))
+        results[spill] = (
+            next(iter(kernel.get_shared_mem_per_block().values())),
+            next(iter(kernel.get_local_mem_per_thread().values())),
+        )
+    shared_off, local_off = results[False]
+    shared_on, local_on = results[True]
+    assert shared_off == 0
+    assert shared_on > 0
+    assert local_on < local_off
+
+
 @requires_cuda13
 def test_pragma_absent_by_default():
     @cuda.jit(lto=True)
