@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: BSD-2-Clause
 
 import types as pytypes  # avoid confusion with numba.types
+import builtins
 import copy
 import ctypes
-import weakref
 from numba_cuda_mlir.numba_cuda import HAS_NUMBA
 from numba_cuda_mlir.numba_cuda import types, config, cgutils
 from numba_cuda_mlir.numba_cuda.core import ir
@@ -244,10 +244,105 @@ def check_reduce_func(func_ir, func_var):
     return reduce_func
 
 
-# Canonical callee IR per (function, flags, enable_ssa), shared by all
-# InlineWorker instances. Keyed weakly so IR does not outlive its
-# function.
-_callee_ir_cache = weakref.WeakKeyDictionary()
+# Canonical callee IR is cached on the function object itself under this
+# attribute, as {(str(flags), enable_ssa): (canonical_ir, bindings,
+# children)}. Storing it on the function keeps every reference local to
+# the function's own object graph, so the cache is collected with the
+# function instead of pinning it from a module-level structure.
+_CALLEE_IR_CACHE_ATTR = "__numba_cuda_callee_ir_cache__"
+
+# Stack of collectors for the fills currently in progress. The untyped
+# pipeline run for a callee inlines that callee's own inline="always"
+# callees, so each fill records which cached child IR was spliced into
+# the canonical IR being built; validation then checks the whole
+# subtree. Compilation is serialised by the compiler lock, so a plain
+# list is sufficient.
+_active_fill_collectors = []
+
+
+def _resolve_global_binding(function, name):
+    """Resolve ``name`` the way the interpreter's LOAD_GLOBAL does."""
+    try:
+        return function.__globals__[name]
+    except KeyError:
+        return getattr(builtins, name, ir.UNDEFINED)
+
+
+def _resolve_freevar_binding(function, index):
+    """Resolve a closure cell the way the interpreter's LOAD_DEREF does."""
+    closure = function.__closure__
+    if closure is None or index >= len(closure):
+        return ir.UNDEFINED
+    try:
+        return closure[index].cell_contents
+    except ValueError:
+        return ir.UNDEFINED
+
+
+def _snapshot_bindings(function, func_ir):
+    """Record the global and freevar values embedded in ``func_ir``.
+
+    Only bindings that currently re-resolve (through ``function``) to
+    the exact object embedded in the IR are recorded; anything else is
+    either interpreter-synthesised or came from another module via an
+    inlined child, and is validated through that child's own cache
+    entry instead.
+    """
+    bindings = {}
+    for block in func_ir.blocks.values():
+        for stmt in block.body:
+            if not isinstance(stmt, ir.Assign):
+                continue
+            value = stmt.value
+            if isinstance(value, ir.Global):
+                key = ("global", value.name)
+                current = _resolve_global_binding(function, value.name)
+            elif isinstance(value, ir.FreeVar):
+                key = ("freevar", value.index)
+                current = _resolve_freevar_binding(function, value.index)
+            else:
+                continue
+            if current is value.value:
+                bindings[key] = value.value
+    return bindings
+
+
+def _bindings_current(function, bindings):
+    for (kind, name), cached in bindings.items():
+        if kind == "global":
+            current = _resolve_global_binding(function, name)
+        else:
+            current = _resolve_freevar_binding(function, name)
+        if current is not cached:
+            return False
+    return True
+
+
+def _cache_entry_current(function, entry):
+    """Check a cache entry and its inlined-subtree entries for staleness.
+
+    An entry is stale if any global or closure cell embedded in its IR
+    no longer resolves to the same object, or if any child entry whose
+    IR was spliced into it has itself been rebuilt or gone stale.
+    """
+    stack = [(function, entry)]
+    seen = set()
+    while stack:
+        func, (canonical_ir, bindings, children) = stack.pop()
+        if id(canonical_ir) in seen:
+            continue
+        seen.add(id(canonical_ir))
+        if not _bindings_current(func, bindings):
+            return False
+        for child_func, child_key, child_ir in children:
+            if child_ir is None:
+                return False
+            per_child = child_func.__dict__.get(_CALLEE_IR_CACHE_ATTR)
+            child_entry = per_child.get(child_key) if per_child else None
+            if child_entry is None or child_entry[0] is not child_ir:
+                return False
+            stack.append((child_func, child_entry))
+    return True
 
 
 def _clone_callee_ir(func_ir):
@@ -527,14 +622,39 @@ class InlineWorker:
         pipeline is far more expensive than cloning, and deeply
         nested inline='always' functions otherwise recompile their
         whole subtree at every transitive call site.
+
+        Each cache entry records the global and closure-cell values
+        embedded in its IR and the child entries inlined into it, and
+        is rebuilt whenever any of them no longer hold.
         """
-        per_func = _callee_ir_cache.setdefault(function, {})
+        # run_untyped_passes assigns enable_ssa into the flags, so set it
+        # first to keep the flags string stable across calls.
+        self.flags.enable_ssa = enable_ssa
         key = (str(self.flags), enable_ssa)
-        canonical_ir = per_func.get(key)
-        if canonical_ir is None:
+        try:
+            per_func = function.__dict__.setdefault(_CALLEE_IR_CACHE_ATTR, {})
+        except AttributeError:
             canonical_ir = self.run_untyped_passes(function, enable_ssa)
-            per_func[key] = canonical_ir
-        return _clone_callee_ir(canonical_ir)
+            if _active_fill_collectors:
+                _active_fill_collectors[-1][id(function)] = (function, key, None)
+            return _clone_callee_ir(canonical_ir)
+        entry = per_func.get(key)
+        if entry is None or not _cache_entry_current(function, entry):
+            collector = {}
+            _active_fill_collectors.append(collector)
+            try:
+                canonical_ir = self.run_untyped_passes(function, enable_ssa)
+            finally:
+                _active_fill_collectors.pop()
+            entry = (
+                canonical_ir,
+                _snapshot_bindings(function, canonical_ir),
+                tuple(collector.values()),
+            )
+            per_func[key] = entry
+        if _active_fill_collectors:
+            _active_fill_collectors[-1][id(function)] = (function, key, entry[0])
+        return _clone_callee_ir(entry[0])
 
     def run_untyped_passes(self, func, enable_ssa=False):
         """
