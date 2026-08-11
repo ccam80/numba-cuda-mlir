@@ -522,11 +522,14 @@ class InlineWorker:
         compiler pipeline, and each call site receives a structural
         clone of it.
         """
+        # enable_ssa gets modified internally, set here so hit/miss keys match
         self.flags.enable_ssa = enable_ssa
-        cache = getattr(self.pipeline, _PIPELINE_CALLEE_IR_CACHE_ATTR, None)
+        # InlineWorker permits a None pipeline
+        holder = self.pipeline if self.pipeline is not None else self
+        cache = getattr(holder, _PIPELINE_CALLEE_IR_CACHE_ATTR, None)
         if cache is None:
             cache = {}
-            setattr(self.pipeline, _PIPELINE_CALLEE_IR_CACHE_ATTR, cache)
+            setattr(holder, _PIPELINE_CALLEE_IR_CACHE_ATTR, cache)
 
         key = (function, str(self.flags), enable_ssa)
         canonical_ir = cache.get(key)

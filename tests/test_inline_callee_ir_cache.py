@@ -43,6 +43,12 @@ def test_global_change_recompiles_inlined_callee():
         b = np.ones(1, dtype=np.float32)
         kernel[1, 1](b)
         assert b[0] == 10.0
+
+        GLOBAL_SCALE = 20.0
+        kernel.recompile()
+        c = np.ones(1, dtype=np.float64)
+        kernel[1, 1](c)
+        assert c[0] == 20.0
     finally:
         GLOBAL_SCALE = 2.0
 
@@ -75,6 +81,12 @@ def test_closure_cell_change_recompiles_inlined_callee():
     b = np.zeros(1, dtype=np.float32)
     kernel[1, 1](b)
     assert b[0] == 7.0
+
+    set_c(11.0)
+    kernel.recompile()
+    c = np.zeros(1, dtype=np.float64)
+    kernel[1, 1](c)
+    assert c[0] == 11.0
 
 
 def test_nested_inlines_share_pipeline_cache(monkeypatch):
