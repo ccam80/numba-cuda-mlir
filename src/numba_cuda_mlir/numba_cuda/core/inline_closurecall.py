@@ -244,19 +244,10 @@ def check_reduce_func(func_ir, func_var):
     return reduce_func
 
 
-# Canonical callee IR is cached on the function object itself under this
-# attribute, as {(str(flags), enable_ssa): (canonical_ir, bindings,
-# children)}. Storing it on the function keeps every reference local to
-# the function's own object graph, so the cache is collected with the
-# function instead of pinning it from a module-level structure.
+# Cache attribute on the function: {(str(flags), enable_ssa): (ir, bindings, children)}.
 _CALLEE_IR_CACHE_ATTR = "__numba_cuda_callee_ir_cache__"
 
-# Stack of collectors for the fills currently in progress. The untyped
-# pipeline run for a callee inlines that callee's own inline="always"
-# callees, so each fill records which cached child IR was spliced into
-# the canonical IR being built; validation then checks the whole
-# subtree. Compilation is serialised by the compiler lock, so a plain
-# list is sufficient.
+# Collector stack for in-progress fills; each fill records the child entries it splices in.
 _active_fill_collectors = []
 
 
@@ -280,14 +271,7 @@ def _resolve_freevar_binding(function, index):
 
 
 def _snapshot_bindings(function, func_ir):
-    """Record the global and freevar values embedded in ``func_ir``.
-
-    Only bindings that currently re-resolve (through ``function``) to
-    the exact object embedded in the IR are recorded; anything else is
-    either interpreter-synthesised or came from another module via an
-    inlined child, and is validated through that child's own cache
-    entry instead.
-    """
+    """Record the embedded global and freevar values that re-resolve through ``function``."""
     bindings = {}
     for block in func_ir.blocks.values():
         for stmt in block.body:
@@ -319,12 +303,7 @@ def _bindings_current(function, bindings):
 
 
 def _cache_entry_current(function, entry):
-    """Check a cache entry and its inlined-subtree entries for staleness.
-
-    An entry is stale if any global or closure cell embedded in its IR
-    no longer resolves to the same object, or if any child entry whose
-    IR was spliced into it has itself been rebuilt or gone stale.
-    """
+    """Check the entry and the child entries spliced into it for stale bindings."""
     stack = [(function, entry)]
     seen = set()
     while stack:
@@ -621,14 +600,11 @@ class InlineWorker:
         site receives a structural clone of it. Running the untyped
         pipeline is far more expensive than cloning, and deeply
         nested inline='always' functions otherwise recompile their
-        whole subtree at every transitive call site.
-
-        Each cache entry records the global and closure-cell values
-        embedded in its IR and the child entries inlined into it, and
-        is rebuilt whenever any of them no longer hold.
+        whole subtree at every transitive call site. Entries are
+        rebuilt when an embedded global, closure cell, or spliced
+        child entry changes.
         """
-        # run_untyped_passes assigns enable_ssa into the flags, so set it
-        # first to keep the flags string stable across calls.
+        # Assign enable_ssa before building the key so the flags string is stable.
         self.flags.enable_ssa = enable_ssa
         key = (str(self.flags), enable_ssa)
         try:
