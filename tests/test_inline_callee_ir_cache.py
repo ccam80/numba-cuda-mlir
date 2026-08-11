@@ -12,7 +12,6 @@ from numba_cuda_mlir.numba_cuda.descriptor import cuda_target
 from numba_cuda_mlir.numba_cuda.flags import Flags
 
 GLOBAL_SCALE = 2.0
-WORKER_OFFSET = 5.0
 
 
 def _make_worker():
@@ -78,52 +77,49 @@ def test_closure_cell_change_recompiles_inlined_callee():
     assert b[0] == 7.0
 
 
-def test_cache_hit_skips_untyped_pipeline():
-    global WORKER_OFFSET
-    WORKER_OFFSET = 5.0
-    try:
+def test_nested_inlines_share_pipeline_cache(monkeypatch):
+    @cuda.jit(device=True, inline="always")
+    def leaf(x):
+        return x + 1.0
 
-        def callee(x):
-            return x + WORKER_OFFSET
+    @cuda.jit(device=True, inline="always")
+    def branch(x):
+        return leaf(x) + leaf(x)
 
-        worker = _make_worker()
-        runs = []
-        run_untyped_passes = InlineWorker.run_untyped_passes
+    def root(x):
+        return branch(x) + branch(x)
 
-        def counting_run(self, func, enable_ssa=False):
-            runs.append(func)
-            return run_untyped_passes(self, func, enable_ssa)
+    runs = []
+    run_untyped_passes = InlineWorker.run_untyped_passes
 
-        InlineWorker.run_untyped_passes = counting_run
-        try:
-            worker._fresh_callee_ir(callee)
-            worker._fresh_callee_ir(callee)
-            assert len(runs) == 1
+    def counting_run(self, func, enable_ssa=False):
+        runs.append(func)
+        return run_untyped_passes(self, func, enable_ssa)
 
-            WORKER_OFFSET = 6.0
-            worker._fresh_callee_ir(callee)
-            assert len(runs) == 2
+    monkeypatch.setattr(InlineWorker, "run_untyped_passes", counting_run)
 
-            worker._fresh_callee_ir(callee)
-            assert len(runs) == 2
-        finally:
-            InlineWorker.run_untyped_passes = run_untyped_passes
-    finally:
-        WORKER_OFFSET = 5.0
+    worker = _make_worker()
+    worker._fresh_callee_ir(root)
+    worker._fresh_callee_ir(root)
+    assert runs.count(root) == 1
+    assert runs.count(branch.py_func) == 1
+    assert runs.count(leaf.py_func) == 1
+
+    _make_worker()._fresh_callee_ir(root)
+    assert runs.count(root) == 2
+    assert runs.count(branch.py_func) == 2
+    assert runs.count(leaf.py_func) == 2
 
 
 def test_cache_released_with_function():
-    def make_callee():
+    def populate_cache():
         def callee(x):
             return x + 1.0
 
-        return callee
+        worker = _make_worker()
+        worker._fresh_callee_ir(callee)
+        return weakref.ref(callee)
 
-    callee = make_callee()
-    worker = _make_worker()
-    worker._fresh_callee_ir(callee)
-
-    ref = weakref.ref(callee)
-    del callee
+    ref = populate_cache()
     gc.collect()
     assert ref() is None

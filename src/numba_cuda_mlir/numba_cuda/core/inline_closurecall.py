@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: BSD-2-Clause
 
 import types as pytypes  # avoid confusion with numba.types
-import builtins
 import copy
 import ctypes
 from numba_cuda_mlir.numba_cuda import HAS_NUMBA
@@ -244,84 +243,7 @@ def check_reduce_func(func_ir, func_var):
     return reduce_func
 
 
-# Cache attribute on the function: {(str(flags), enable_ssa): (ir, bindings, children)}.
-_CALLEE_IR_CACHE_ATTR = "__numba_cuda_callee_ir_cache__"
-
-# Collector stack for in-progress fills; each fill records the child entries it splices in.
-_active_fill_collectors = []
-
-
-def _resolve_global_binding(function, name):
-    """Resolve ``name`` the way the interpreter's LOAD_GLOBAL does."""
-    try:
-        return function.__globals__[name]
-    except KeyError:
-        return getattr(builtins, name, ir.UNDEFINED)
-
-
-def _resolve_freevar_binding(function, index):
-    """Resolve a closure cell the way the interpreter's LOAD_DEREF does."""
-    closure = function.__closure__
-    if closure is None or index >= len(closure):
-        return ir.UNDEFINED
-    try:
-        return closure[index].cell_contents
-    except ValueError:
-        return ir.UNDEFINED
-
-
-def _snapshot_bindings(function, func_ir):
-    """Record the embedded global and freevar values that re-resolve through ``function``."""
-    bindings = {}
-    for block in func_ir.blocks.values():
-        for stmt in block.body:
-            if not isinstance(stmt, ir.Assign):
-                continue
-            value = stmt.value
-            if isinstance(value, ir.Global):
-                key = ("global", value.name)
-                current = _resolve_global_binding(function, value.name)
-            elif isinstance(value, ir.FreeVar):
-                key = ("freevar", value.index)
-                current = _resolve_freevar_binding(function, value.index)
-            else:
-                continue
-            if current is value.value:
-                bindings[key] = value.value
-    return bindings
-
-
-def _bindings_current(function, bindings):
-    for (kind, name), cached in bindings.items():
-        if kind == "global":
-            current = _resolve_global_binding(function, name)
-        else:
-            current = _resolve_freevar_binding(function, name)
-        if current is not cached:
-            return False
-    return True
-
-
-def _cache_entry_current(function, entry):
-    """Check the entry and the child entries spliced into it for stale bindings."""
-    stack = [(function, entry)]
-    seen = set()
-    while stack:
-        func, (canonical_ir, bindings, children) = stack.pop()
-        if id(canonical_ir) in seen:
-            continue
-        seen.add(id(canonical_ir))
-        if not _bindings_current(func, bindings):
-            return False
-        for child_func, child_key, child_ir in children:
-            if child_ir is None:
-                return False
-            per_child = child_func.__dict__.get(_CALLEE_IR_CACHE_ATTR)
-            child_entry = per_child.get(child_key) if per_child else None
-            if child_entry is None or child_entry[0] is not child_ir:
-                return False
-            stack.append((child_func, child_entry))
-    return True
+_PIPELINE_CALLEE_IR_CACHE_ATTR = "_numba_cuda_callee_ir_cache"
 
 
 def _clone_callee_ir(func_ir):
@@ -596,41 +518,22 @@ class InlineWorker:
         """Return callee IR that is safe for ``inline_ir`` to mutate.
 
         The canonical IR produced by the untyped pipeline for a given
-        function and flags configuration is cached, and each call
-        site receives a structural clone of it. Running the untyped
-        pipeline is far more expensive than cloning, and deeply
-        nested inline='always' functions otherwise recompile their
-        whole subtree at every transitive call site. Entries are
-        rebuilt when an embedded global, closure cell, or spliced
-        child entry changes.
+        function and flags configuration is cached for the current
+        compiler pipeline, and each call site receives a structural
+        clone of it.
         """
-        # Assign enable_ssa before building the key so the flags string is stable.
         self.flags.enable_ssa = enable_ssa
-        key = (str(self.flags), enable_ssa)
-        try:
-            per_func = function.__dict__.setdefault(_CALLEE_IR_CACHE_ATTR, {})
-        except AttributeError:
+        cache = getattr(self.pipeline, _PIPELINE_CALLEE_IR_CACHE_ATTR, None)
+        if cache is None:
+            cache = {}
+            setattr(self.pipeline, _PIPELINE_CALLEE_IR_CACHE_ATTR, cache)
+
+        key = (function, str(self.flags), enable_ssa)
+        canonical_ir = cache.get(key)
+        if canonical_ir is None:
             canonical_ir = self.run_untyped_passes(function, enable_ssa)
-            if _active_fill_collectors:
-                _active_fill_collectors[-1][id(function)] = (function, key, None)
-            return _clone_callee_ir(canonical_ir)
-        entry = per_func.get(key)
-        if entry is None or not _cache_entry_current(function, entry):
-            collector = {}
-            _active_fill_collectors.append(collector)
-            try:
-                canonical_ir = self.run_untyped_passes(function, enable_ssa)
-            finally:
-                _active_fill_collectors.pop()
-            entry = (
-                canonical_ir,
-                _snapshot_bindings(function, canonical_ir),
-                tuple(collector.values()),
-            )
-            per_func[key] = entry
-        if _active_fill_collectors:
-            _active_fill_collectors[-1][id(function)] = (function, key, entry[0])
-        return _clone_callee_ir(entry[0])
+            cache[key] = canonical_ir
+        return _clone_callee_ir(canonical_ir)
 
     def run_untyped_passes(self, func, enable_ssa=False):
         """
