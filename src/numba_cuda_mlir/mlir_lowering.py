@@ -2364,7 +2364,7 @@ extern "C" __global__ void
         bytes_op = arith.constant(result=T.index(), value=bytes)
         shm_base = self._get_shared_memory_base()
         total_shared_memory_bytes = self._load_total_shared_memory_bytes()
-        # %dynamic_smem_size via inline asm; memref.dim reads zero at runtime.
+        # LLVM 7 has no dynamic_smem_size intrinsic; read the sreg directly.
         smem_size = llvm.inline_asm(
             T.i32(),
             [],
@@ -2380,7 +2380,6 @@ extern "C" __global__ void
             byte_shift=total_shared_memory_bytes,
             sizes=[size],
         )
-        self._store_total_shared_memory_bytes(dynamic_shared_bytes)
         self._dynamic_shared_memory_values.append(view)
         return view
 

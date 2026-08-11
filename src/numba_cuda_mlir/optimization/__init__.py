@@ -193,7 +193,7 @@ def _resolve_shared_bit_storage_float_accesses(module: ir.Module):
 
 
 def _externalize_dynamic_shared_globals(module: ir.Module):
-    """Externalize the zero-length ``__dynamic_shmem__*`` globals so their size is unknown to the optimizer, as with CUDA C's ``extern __shared__``."""
+    """Give zero-length ``__dynamic_shmem__`` globals external linkage so their size is unknown."""
     external = ir.Attribute.parse("#llvm.linkage<external>")
 
     def walk(op):
@@ -201,8 +201,8 @@ def _externalize_dynamic_shared_globals(module: ir.Module):
             for block in region.blocks:
                 for child in block.operations:
                     if child.operation.name == "llvm.mlir.global":
-                        sym = str(child.attributes["sym_name"])
-                        if "__dynamic_shmem__" in sym:
+                        sym = ir.StringAttr(child.attributes["sym_name"]).value
+                        if sym.startswith("__dynamic_shmem__"):
                             child.attributes["linkage"] = external
                     walk(child.operation)
 

@@ -870,8 +870,8 @@ class Slice:
         yield self.step
 
 
-def resolve_slice(builder, slc: Slice, mr: ir.Value, dim_index: int = 0):
-    """Resolve a slice against one memref dimension."""
+def _resolve_slice(builder, slc: Slice, mr: ir.Value, dim_index: int = 0):
+    """Return (start, length, step) index values with Python slice semantics for dim dim_index."""
     start, stop, step = slc.start, slc.stop, slc.step
     c_step = 1 if step is None else try_extract_constant(step)
     if c_step == 0:
@@ -932,7 +932,7 @@ def _strided_view(
     strides: list[ir.Value],
     dims_to_drop: list[bool] | None = None,
 ) -> ir.Value:
-    """Build a view from the source memref metadata."""
+    """Build a strided view; dimensions marked in dims_to_drop are dropped from the result."""
     rank = array.type.rank
     metadata = memref_dialect.extract_strided_metadata(array)
     source_strides = list(metadata[2 + rank : 2 + 2 * rank])
@@ -1036,17 +1036,6 @@ def _lower_record_array_getitem(builder, target, args, kwargs):
     trace("Record array getitem: stored ptr to %s", target.name)
 
 
-def _rank_reducing_view(
-    array: ir.Value,
-    sv_offsets: list[ir.Value],
-    sv_sizes: list[ir.Value],
-    sv_strides: list[ir.Value],
-    dims_to_drop: list[bool],
-) -> ir.Value:
-    """Drop scalar-indexed dimensions from a strided view."""
-    return _strided_view(array, sv_offsets, sv_sizes, sv_strides, dims_to_drop)
-
-
 @lower(operator.getitem, types.Array, types.Number)
 @lower(operator.getitem, types.Array, types.Integer)
 @lower(operator.getitem, types.Buffer, types.Integer)
@@ -1090,7 +1079,7 @@ def lower_array_getitem(builder, target, args, kwargs):
         sv_sizes = [index_of(1)] + [memref.dim(array, index_of(i)) for i in range(1, rank)]
         sv_strides = [index_of(1)] * rank
         dims_to_drop = [True] + [False] * (rank - 1)
-        value = _rank_reducing_view(array, sv_offsets, sv_sizes, sv_strides, dims_to_drop)
+        value = _strided_view(array, sv_offsets, sv_sizes, sv_strides, dims_to_drop)
 
     builder.store_var(target, value)
 
@@ -1101,7 +1090,7 @@ def lower_array_slice_getitem(builder, target, args, kwargs):
     mr = builder.load_var(args[0])
     rank = mr.type.rank
     slc = builder.load_var(args[1])
-    start, length, step = resolve_slice(builder, slc, mr)
+    start, length, step = _resolve_slice(builder, slc, mr)
 
     offsets = [start] + [index_of(0) for _ in range(1, rank)]
     sizes = [length] + [memref.dim(mr, index_of(i)) for i in range(1, rank)]
@@ -1568,7 +1557,7 @@ def lower_array_slice_setitem(builder, target, args, kwargs):
     mr_type = array.type
     rank = mr_type.rank
 
-    start, length, step = resolve_slice(builder, slice_val, array)
+    start, length, step = _resolve_slice(builder, slice_val, array)
 
     # Map a forward loop onto the resolved slice.
     starts = [index_of(0)] * rank
@@ -1619,8 +1608,6 @@ def lower_array_tuple_getitem(builder: MLIRLower, target, args, kwargs):
     n_indexed = len(tuple_indices)
     n_trailing = source_rank - n_indexed
 
-    dims = [memref.dim(array, index_of(i)) for i in range(source_rank)]
-
     offsets, sizes, strides, is_scalar = [], [], [], []
     for i, index in enumerate(tuple_indices):
         match index:
@@ -1629,13 +1616,13 @@ def lower_array_tuple_getitem(builder: MLIRLower, target, args, kwargs):
                     raise TypeError(
                         f"Target type {target_type} is not an array, but a slice was used to index it"
                     )
-                s_start, s_length, s_step = resolve_slice(builder, slc, array, i)
+                s_start, s_length, s_step = _resolve_slice(builder, slc, array, i)
                 offsets.append(s_start)
                 sizes.append(s_length)
                 strides.append(s_step)
                 is_scalar.append(False)
-            case int() as i:
-                offsets.append(arith.constant(result=T.index(), value=i))
+            case int() as const_index:
+                offsets.append(arith.constant(result=T.index(), value=const_index))
                 sizes.append(1)
                 strides.append(1)
                 is_scalar.append(True)
@@ -1650,8 +1637,9 @@ def lower_array_tuple_getitem(builder: MLIRLower, target, args, kwargs):
                 )
 
     # Extend with full-extent entries for unindexed trailing dimensions
+    trailing_dims = [memref.dim(array, index_of(n_indexed + i)) for i in range(n_trailing)]
     full_offsets = list(offsets) + [index_of(0)] * n_trailing
-    full_sizes = list(sizes) + [dims[n_indexed + i] for i in range(n_trailing)]
+    full_sizes = list(sizes) + trailing_dims
     full_strides = list(strides) + [index_of(1)] * n_trailing
     full_is_scalar = list(is_scalar) + [False] * n_trailing
 
@@ -1662,9 +1650,7 @@ def lower_array_tuple_getitem(builder: MLIRLower, target, args, kwargs):
                 raise InternalCompilerError(
                     f"Result rank {n_kept} does not match target type ndim {target_type.ndim}"
                 )
-            value = _rank_reducing_view(
-                array, full_offsets, full_sizes, full_strides, full_is_scalar
-            )
+            value = _strided_view(array, full_offsets, full_sizes, full_strides, full_is_scalar)
             builder.store_var(target, value)
         case types.Number() | types.Boolean():
             value = lowering_utilities.array_element_value_load(

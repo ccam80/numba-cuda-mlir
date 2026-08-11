@@ -104,12 +104,6 @@ def test_slice_axis0_offset_3d_per_block():
     np.testing.assert_array_equal(dst.copy_to_host(), src)
 
 
-if __name__ == "__main__":
-    test_incomplete_slice(*INCOMPLETE_SLICE_CASES[0])
-    test_slice_axis0_offset_2d(3)
-    test_slice_axis0_offset_3d_per_block()
-
-
 FROZEN_SLICE_CASES = (
     ("empty_tail", slice(4, 4)),
     ("empty_head", slice(0, 0)),
@@ -397,6 +391,7 @@ def test_thread_index_derived_slice():
 
 
 def test_overflowed_nonnegative_expression_bound():
+    # Overflowed bounds wrap like any negative index.
     @cuda.jit
     def k(arr, out):
         start = arr.shape[0] * np.int64(1 << 62)
@@ -442,3 +437,28 @@ def test_static_partial_index():
     k[1, 1](out)
     assert out[0] == 4
     assert out[1] == 5
+
+
+def test_slice_lowers_to_strided_view():
+    @cuda.jit
+    def k(arr, out, s):
+        view = arr[s:]
+        out[0] = view[0]
+
+    arr = np.arange(4, dtype=np.float32)
+    out = np.zeros(1, dtype=np.float32)
+    k[1, 1](arr, out, 1)
+    assert out[0] == 1
+
+    # CHECK-LABEL: gpu.func
+    # CHECK: memref.extract_strided_metadata
+    # CHECK: memref.reinterpret_cast
+    cres = compiler.compile_for(k, arr, out, 1)
+    mlir = cres.mlir_module_str
+    testing.filecheck_with_comments(mlir)
+
+
+if __name__ == "__main__":
+    test_incomplete_slice(*INCOMPLETE_SLICE_CASES[0])
+    test_slice_axis0_offset_2d(3)
+    test_slice_axis0_offset_3d_per_block()
