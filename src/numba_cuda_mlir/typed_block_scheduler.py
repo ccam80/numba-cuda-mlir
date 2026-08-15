@@ -33,12 +33,20 @@ Any topological order of that DAG is a legal statement order.  The
   and one-shot chains stay serial and late.
 """
 
+import gzip
 import heapq
+import json
 import os
 
 from numba_cuda_mlir.numba_cuda import types
 from numba_cuda_mlir.numba_cuda.core import ir
 from numba_cuda_mlir._whole_function_planners import TypedWholeFunctionPlanner
+
+#: Dump the dependency graph of every large block to this gzip path.
+_DUMP_ENV = "NUMBA_CUDA_MLIR_BLOCK_SCHEDULE_DUMP"
+#: Read explicit per-block orders (JSON: label -> node order) from here.
+_INJECT_ENV = "NUMBA_CUDA_MLIR_BLOCK_SCHEDULE_ORDER"
+_DUMP_MIN_STATEMENTS = 2000
 
 _METADATA_KEY = "typed_block_scheduler"
 
@@ -105,6 +113,7 @@ class _Node:
         "uses",
         "successors",
         "predecessors",
+        "memory",
     )
 
     def __init__(self, index, statement, defs, uses):
@@ -114,6 +123,7 @@ class _Node:
         self.uses = uses
         self.successors = set()
         self.predecessors = set()
+        self.memory = None
 
 
 class TypedBlockScheduler(TypedWholeFunctionPlanner):
@@ -126,12 +136,21 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
         policy = self.state.metadata.get(
             "typed_block_scheduler_policy", type(self).policy
         )
-        if policy not in {"source", "dfs", "liveness", "longlived_dfs"}:
+        if policy not in {"source", "dfs", "liveness", "longlived_dfs", "inject"}:
             raise ValueError(f"unknown block schedule policy {policy!r}")
         func_ir = self.state.func_ir
         typemap = self.state.typemap
         roots = self._alias_roots(func_ir, typemap)
         live_out = self._block_live_out(func_ir)
+        dump_path = os.environ.get(_DUMP_ENV)
+        inject_orders = {}
+        if policy == "inject":
+            with open(os.environ[_INJECT_ENV], "r", encoding="utf-8") as fh:
+                inject_orders = {
+                    int(label): order
+                    for label, order in json.load(fh).items()
+                }
+        dumped_blocks = {}
         modified = False
         stats = {
             "blocks": 0,
@@ -139,6 +158,8 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
             "moved_statements": 0,
             "statements": 0,
             "largest_block": 0,
+            "modeled_peak_source": 0,
+            "modeled_peak_scheduled": 0,
         }
         for label, block in func_ir.blocks.items():
             stats["blocks"] += 1
@@ -146,12 +167,29 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
             stats["largest_block"] = max(
                 stats["largest_block"], len(block.body)
             )
-            if policy == "source":
+            if policy == "source" and dump_path is None:
                 continue
-            order = self._schedule_block(
-                block, policy, roots, typemap, live_out.get(label, frozenset())
+            scheduled = self._schedule_block(
+                block,
+                policy,
+                roots,
+                typemap,
+                live_out.get(label, frozenset()),
+                inject_orders.get(label),
+                dumped_blocks if dump_path is not None else None,
+                label,
             )
-            if order is None:
+            if scheduled is None:
+                continue
+            order, block_stats = scheduled
+            stats["modeled_peak_source"] = max(
+                stats["modeled_peak_source"], block_stats["peak_source"]
+            )
+            stats["modeled_peak_scheduled"] = max(
+                stats["modeled_peak_scheduled"],
+                block_stats["peak_scheduled"],
+            )
+            if policy == "source":
                 continue
             body = block.body
             new_body = [body[index] for index in order] + [body[-1]]
@@ -163,6 +201,9 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
                 stats["reordered_blocks"] += 1
                 stats["moved_statements"] += moved
                 modified = True
+        if dump_path is not None and dumped_blocks:
+            with gzip.open(dump_path, "wt", encoding="utf-8") as fh:
+                json.dump(dumped_blocks, fh)
         stats["policy"] = policy
         self.state.metadata[_METADATA_KEY] = stats
         return modified
@@ -170,47 +211,90 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
     # -- alias analysis ------------------------------------------------
 
     def _alias_roots(self, func_ir, typemap):
-        """Map each array-typed name to a conservative allocation root.
+        """Map each array-typed name to ``(root, element offset)``.
 
         Roots are argument names, allocating calls, or the sentinel
         ``None`` for unknown provenance.  Views (``getitem``/
         ``static_getitem``/``cast`` returning an array) share their
-        parent's root.
+        parent's root.  The offset is the constant element distance
+        from the root's first element for unit-step one-dimensional
+        view chains, or ``None`` when it cannot be proven — accesses
+        through such views serialise against their whole root.
         """
 
         roots = {}
+
+        def view_offset(expression):
+            index = getattr(expression, "index", None)
+            if isinstance(index, ir.Var):
+                try:
+                    definition = func_ir.get_definition(index)
+                except Exception:
+                    return None
+                if not isinstance(
+                    definition, (ir.Const, ir.Global, ir.FreeVar)
+                ):
+                    return None
+                index = definition.value
+            if isinstance(index, slice):
+                if (
+                    index.step in (None, 1)
+                    and isinstance(index.start, int)
+                    and index.start >= 0
+                ):
+                    return index.start
+                if index == slice(None):
+                    return 0
+                return None
+            return None
 
         def resolve(name, seen):
             if name in roots:
                 return roots[name]
             if name in seen:
-                return None
+                return (None, None)
             seen.add(name)
             definitions = func_ir._definitions.get(name, [])
             if len(definitions) != 1:
-                root = None
+                entry = (None, None)
             else:
                 value = definitions[0]
                 if isinstance(value, ir.Arg):
-                    root = ("arg", value.index)
+                    entry = (("arg", value.index), 0)
                 elif isinstance(value, ir.Var):
-                    root = resolve(value.name, seen)
+                    entry = resolve(value.name, seen)
                 elif isinstance(value, ir.Expr):
-                    if value.op in _VIEW_EXPR_OPS:
+                    if value.op == "cast":
                         parent = value.value
-                        root = (
+                        entry = (
                             resolve(parent.name, seen)
                             if isinstance(parent, ir.Var)
-                            else None
+                            else (None, None)
                         )
+                    elif value.op in ("getitem", "static_getitem"):
+                        parent = value.value
+                        if isinstance(parent, ir.Var):
+                            root, offset = resolve(parent.name, seen)
+                            parent_type = typemap.get(parent.name)
+                            step = (
+                                view_offset(value)
+                                if getattr(parent_type, "ndim", 0) == 1
+                                else None
+                            )
+                            if offset is None or step is None:
+                                entry = (root, None)
+                            else:
+                                entry = (root, offset + step)
+                        else:
+                            entry = (None, None)
                     elif value.op == "call":
-                        root = ("alloc", id(value))
+                        entry = (("alloc", id(value)), 0)
                     else:
-                        root = None
+                        entry = (None, None)
                 else:
-                    root = None
-            roots[name] = root
-            return root
+                    entry = (None, None)
+            roots[name] = entry
+            return entry
 
         for name, numba_type in typemap.items():
             if isinstance(numba_type, types.Array):
@@ -299,9 +383,56 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
             return False
         return module.split(".")[0] in _PURE_CALL_MODULE_ROOTS
 
+    def _constant_index(self, func_ir, operation):
+        """Return a hashable constant index for a memory operation.
+
+        ``None`` means the index could not be resolved to a
+        non-negative constant, so the operation conservatively
+        serialises against every element of its alias root.  Negative
+        constants stay unresolved because they alias an unknown
+        positive element.
+        """
+
+        index = getattr(operation, "index", None)
+        if isinstance(index, ir.Var):
+            try:
+                definition = func_ir.get_definition(index)
+            except Exception:
+                return None
+            if not isinstance(definition, (ir.Const, ir.Global, ir.FreeVar)):
+                return None
+            index = definition.value
+        if isinstance(index, tuple):
+            if all(isinstance(item, int) and item >= 0 for item in index):
+                return index[0] if len(index) == 1 else index
+            return None
+        if isinstance(index, int) and not isinstance(index, bool):
+            return index if index >= 0 else None
+        return None
+
+    @staticmethod
+    def _absolute_index(index_key, base_offset):
+        """Combine an access index with its view's element offset."""
+
+        if index_key is None or base_offset is None:
+            return None
+        if isinstance(index_key, tuple):
+            return index_key if base_offset == 0 else None
+        return index_key + base_offset
+
     # -- graph construction --------------------------------------------
 
-    def _schedule_block(self, block, policy, roots, typemap, live_out):
+    def _schedule_block(
+        self,
+        block,
+        policy,
+        roots,
+        typemap,
+        live_out,
+        injected_order=None,
+        dump_sink=None,
+        label=None,
+    ):
         body = block.body
         if len(body) < 3:
             return None
@@ -377,10 +508,17 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
             for name in node.defs | node.uses:
                 references.setdefault(name, []).append(node.index)
 
-        # Memory chains and barriers.
+        # Memory chains and barriers.  Chains are keyed by
+        # ``(alias root, constant index)`` so stores to distinct
+        # elements of the same array reorder freely; operations with an
+        # unresolvable index serialise within their root, and
+        # operations with an unknown root act as barriers.
         func_ir = self.state.func_ir
         last_store = {}
-        loads_since_store = {}
+        last_unknown_store = {}
+        loads = {}
+        loads_unknown = {}
+        root_keys = {}
         last_barrier = None
         memory_nodes = []
 
@@ -388,9 +526,15 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
             statement = node.statement
             kind = None
             root = None
+            index_key = None
             if isinstance(statement, (ir.SetItem, ir.StaticSetItem)):
                 kind = "store"
-                root = roots.get(statement.target.name)
+                root, base_offset = roots.get(
+                    statement.target.name, (None, None)
+                )
+                index_key = self._absolute_index(
+                    self._constant_index(func_ir, statement), base_offset
+                )
             elif isinstance(statement, _BARRIER_STATEMENT_TYPES):
                 kind = "barrier"
             elif isinstance(statement, ir.Assign):
@@ -402,7 +546,13 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
                         kind = None  # view creation is address arithmetic
                     else:
                         kind = "load"
-                        root = roots.get(statement.value.value.name)
+                        root, base_offset = roots.get(
+                            statement.value.value.name, (None, None)
+                        )
+                        index_key = self._absolute_index(
+                            self._constant_index(func_ir, statement.value),
+                            base_offset,
+                        )
                 elif op == "call":
                     if self._call_is_pure(func_ir, typemap, statement.value):
                         kind = None
@@ -417,12 +567,16 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
                 # against every memory operation on the same root.
                 if isinstance(typemap.get(statement.value), types.Array):
                     kind = "store"
-                    root = roots.get(statement.value)
+                    root, _ = roots.get(statement.value, (None, None))
                 else:
                     kind = None
             else:
                 kind = "barrier"
 
+            if kind is not None and kind != "barrier" and root is None:
+                kind = "barrier"
+            if kind is not None:
+                node.memory = (kind, repr(root), repr(index_key))
             if kind is None:
                 continue
             if kind == "barrier":
@@ -434,47 +588,157 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
             if last_barrier is not None:
                 add_edge(last_barrier, node)
             memory_nodes.append(node)
-            if root is None:
-                keys = set(last_store) | set(loads_since_store) | {None}
-                if kind == "store":
-                    for key in keys:
-                        store = last_store.get(key)
-                        if store is not None:
-                            add_edge(store, node)
-                        for load_index in loads_since_store.get(key, ()):
-                            add_edge(nodes[load_index], node)
-                        last_store[key] = node
-                        loads_since_store[key] = []
-                else:
-                    for key in keys:
-                        store = last_store.get(key)
-                        if store is not None:
-                            add_edge(store, node)
-                    loads_since_store.setdefault(None, []).append(node.index)
-                continue
-            unknown_store = last_store.get(None)
-            if unknown_store is not None:
-                add_edge(unknown_store, node)
-            if kind == "store":
-                store = last_store.get(root)
+            keys = root_keys.setdefault(root, set())
+            unknown_store = last_unknown_store.get(root)
+            if kind == "store" and index_key is None:
+                for key in keys:
+                    store = last_store.get((root, key))
+                    if store is not None:
+                        add_edge(store, node)
+                    for load_index in loads.get((root, key), ()):
+                        add_edge(nodes[load_index], node)
+                    loads[(root, key)] = []
+                if unknown_store is not None:
+                    add_edge(unknown_store, node)
+                for load_index in loads_unknown.get(root, ()):
+                    add_edge(nodes[load_index], node)
+                loads_unknown[root] = []
+                last_unknown_store[root] = node
+            elif kind == "store":
+                keys.add(index_key)
+                store = last_store.get((root, index_key))
                 if store is not None:
                     add_edge(store, node)
-                for load_index in loads_since_store.get(root, ()):
+                if unknown_store is not None:
+                    add_edge(unknown_store, node)
+                for load_index in loads.get((root, index_key), ()):
                     add_edge(nodes[load_index], node)
-                for load_index in loads_since_store.get(None, ()):
+                for load_index in loads_unknown.get(root, ()):
                     add_edge(nodes[load_index], node)
-                last_store[root] = node
-                loads_since_store[root] = []
+                last_store[(root, index_key)] = node
+                loads[(root, index_key)] = []
+            elif index_key is None:
+                for key in keys:
+                    store = last_store.get((root, key))
+                    if store is not None:
+                        add_edge(store, node)
+                if unknown_store is not None:
+                    add_edge(unknown_store, node)
+                loads_unknown.setdefault(root, []).append(node.index)
             else:
-                store = last_store.get(root)
+                keys.add(index_key)
+                store = last_store.get((root, index_key))
                 if store is not None:
                     add_edge(store, node)
-                loads_since_store.setdefault(root, []).append(node.index)
+                if unknown_store is not None:
+                    add_edge(unknown_store, node)
+                loads.setdefault((root, index_key), []).append(node.index)
 
-        order = self._order_nodes(nodes, policy, live_out)
+        scalar_names = {
+            name
+            for name in typemap
+            if not isinstance(typemap[name], types.Array)
+        }
+        if dump_sink is not None and len(nodes) >= _DUMP_MIN_STATEMENTS:
+            dump_sink[str(label)] = {
+                "pinned": pinned,
+                "live_out": sorted(live_out),
+                "nodes": [
+                    {
+                        "i": node.index,
+                        "kind": type(node.statement).__name__,
+                        "op": _expr_op(node.statement),
+                        "defs": sorted(node.defs & scalar_names),
+                        "all_defs": sorted(node.defs),
+                        "uses": sorted(node.uses),
+                        "mem": node.memory,
+                        "succ": sorted(node.successors),
+                    }
+                    for node in nodes
+                ],
+            }
+        if policy == "inject":
+            order = injected_order
+            if order is not None:
+                expected = set(range(len(nodes)))
+                if sorted(order) != sorted(expected):
+                    raise ValueError(
+                        f"injected order for block {label} is not a "
+                        f"permutation of {len(nodes)} nodes"
+                    )
+                position = {index: pos for pos, index in enumerate(order)}
+                for node in nodes:
+                    for successor in node.successors:
+                        if position[successor] < position[node.index]:
+                            raise ValueError(
+                                f"injected order for block {label} violates "
+                                f"dependency {node.index}->{successor}"
+                            )
+        elif policy == "source":
+            order = None
+        else:
+            order = self._order_nodes(nodes, policy, live_out)
+        peak_source = self._modeled_peak(
+            nodes, range(len(nodes)), scalar_names, live_out
+        )
+        peak_scheduled = (
+            self._modeled_peak(nodes, order, scalar_names, live_out)
+            if order is not None
+            else peak_source
+        )
+        block_stats = {
+            "peak_source": peak_source,
+            "peak_scheduled": peak_scheduled,
+        }
         if order is None:
+            if policy == "source":
+                return (
+                    list(range(len(statements))),
+                    block_stats,
+                )
             return None
-        return list(range(pinned)) + [index + pinned for index in order]
+        return (
+            list(range(pinned)) + [index + pinned for index in order],
+            block_stats,
+        )
+
+    @staticmethod
+    def _modeled_peak(nodes, order, scalar_names, live_out):
+        """Maximum simultaneously live scalar count over an order.
+
+        A scalar becomes live at its definition and dies at its last
+        non-``Del`` use; values in ``live_out`` never die.
+        """
+
+        order = list(order)
+        defined = set()
+        for node in nodes:
+            defined.update(name for name in node.defs if name in scalar_names)
+        last_use = {}
+        for position, index in enumerate(order):
+            node = nodes[index]
+            if isinstance(node.statement, ir.Del):
+                continue
+            for name in node.uses:
+                if name in defined:
+                    last_use[name] = position
+        live = 0
+        peak = 0
+        for position, index in enumerate(order):
+            node = nodes[index]
+            for name in node.defs:
+                if name in defined:
+                    live += 1
+            if not isinstance(node.statement, ir.Del):
+                for name in node.uses:
+                    if (
+                        name in defined
+                        and name not in live_out
+                        and last_use.get(name) == position
+                    ):
+                        live -= 1
+            peak = max(peak, live)
+        return peak
 
     # -- ordering policies ---------------------------------------------
 
@@ -484,18 +748,31 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
         return self._order_dfs(nodes, live_out, policy == "longlived_dfs")
 
     def _order_dfs(self, nodes, live_out, longlived_first):
-        """Roots-first predecessor postorder.
+        """Roots-first predecessor postorder over non-``Del`` nodes.
 
-        Every node without in-block successors is a root: its value (or
-        effect) is only consumed outside the block.  Emitting each
-        root's unscheduled predecessor cone in postorder keeps each
-        chain serial, so one-shot temporaries die immediately.  With
+        A root is a node whose value (or effect) is only consumed
+        outside the block.  Emitting each root's unscheduled
+        predecessor cone in postorder keeps each chain serial, so
+        one-shot temporaries die immediately.  ``Del`` statements are
+        excluded from the walk — every value's Del trails the graph, so
+        treating Dels as roots would replay the source structure — and
+        are spliced back directly after their last predecessor.  With
         ``longlived_first`` the roots defining block-live-out names are
         emitted before effect-only roots, so long-lived values are
         computed early and the short chains run late and serial.
         """
 
-        root_nodes = [node for node in nodes if not node.successors]
+        def is_del(index):
+            return isinstance(nodes[index].statement, ir.Del)
+
+        root_nodes = [
+            node
+            for node in nodes
+            if not is_del(node.index)
+            and not any(
+                not is_del(successor) for successor in node.successors
+            )
+        ]
         if longlived_first:
 
             def root_key(node):
@@ -518,7 +795,9 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
                     iterator = iter(sorted(node.predecessors))
                 advanced = False
                 for predecessor_index in iterator:
-                    if not scheduled[predecessor_index]:
+                    if not scheduled[predecessor_index] and not is_del(
+                        predecessor_index
+                    ):
                         stack.append((node, iterator))
                         stack.append((nodes[predecessor_index], None))
                         advanced = True
@@ -526,9 +805,29 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
                 if not advanced and not scheduled[node.index]:
                     scheduled[node.index] = True
                     order.append(node.index)
-        if len(order) != len(nodes):
+
+        # Splice each Del directly after its last emitted predecessor.
+        position = {index: pos for pos, index in enumerate(order)}
+        insertions = {}
+        for node in nodes:
+            if not is_del(node.index):
+                continue
+            anchor = max(
+                (
+                    position[predecessor]
+                    for predecessor in node.predecessors
+                    if predecessor in position
+                ),
+                default=-1,
+            )
+            insertions.setdefault(anchor, []).append(node.index)
+        final = list(insertions.pop(-1, ()))
+        for pos, index in enumerate(order):
+            final.append(index)
+            final.extend(insertions.pop(pos, ()))
+        if insertions or len(final) != len(nodes):
             return None
-        return order
+        return final
 
     def _order_liveness(self, nodes, live_out):
         """Greedy list schedule minimising the live-value count.
@@ -539,12 +838,19 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
         values die, so heap entries are lazily re-scored on pop.
         """
 
+        # Dels are lifetime markers, not the dataflow use that keeps a
+        # value alive: count only non-Del uses, and give Dels a strongly
+        # negative score so each one chases its last use immediately.
         remaining_uses = {}
         for node in nodes:
+            if isinstance(node.statement, ir.Del):
+                continue
             for name in node.uses:
                 remaining_uses[name] = remaining_uses.get(name, 0) + 1
 
         def score(node):
+            if isinstance(node.statement, ir.Del):
+                return -len(nodes)
             closes = sum(
                 1
                 for name in node.uses
@@ -573,8 +879,9 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
                 continue
             scheduled[index] = True
             order.append(index)
-            for name in node.uses:
-                remaining_uses[name] -= 1
+            if not isinstance(node.statement, ir.Del):
+                for name in node.uses:
+                    remaining_uses[name] -= 1
             for successor_index in node.successors:
                 pending[successor_index] -= 1
                 if pending[successor_index] == 0:
