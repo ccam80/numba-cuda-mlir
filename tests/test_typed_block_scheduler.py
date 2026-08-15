@@ -115,7 +115,7 @@ def _run_scheduled_kernel(policy):
 
 @pytest.mark.skipif(not cuda.is_available(), reason="CUDA GPU required")
 @pytest.mark.parametrize(
-    "policy", ["dfs", "anchor_dfs", "liveness", "longlived_dfs"]
+    "policy", ["dfs", "anchor_dfs", "alap_cones", "liveness", "longlived_dfs"]
 )
 def test_scheduled_kernels_stay_correct(isolated_typed_planners, policy):
     captured = _run_scheduled_kernel(policy)
@@ -184,7 +184,7 @@ def _statement_accesses(statement):
 
 @pytest.mark.skipif(not cuda.is_available(), reason="CUDA GPU required")
 @pytest.mark.parametrize(
-    "policy", ["dfs", "anchor_dfs", "liveness", "longlived_dfs"]
+    "policy", ["dfs", "anchor_dfs", "alap_cones", "liveness", "longlived_dfs"]
 )
 def test_schedule_respects_dependencies(isolated_typed_planners, policy):
     """Every same-name def/use conflict keeps its original order."""

@@ -46,6 +46,9 @@ order:
 ``dfs``
    Terminal-rooted predecessor postorder.
 
+``alap_cones``
+   Anchor cones permuted to their latest legal position.
+
 ``liveness``
    Greedy list schedule closing the most live values first.
 

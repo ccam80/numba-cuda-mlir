@@ -95,13 +95,15 @@ class _Node:
         "successors",
         "predecessors",
         "memory",
+        "ordered_uses",
     )
 
-    def __init__(self, index, statement, defs, uses):
+    def __init__(self, index, statement, defs, uses, ordered_uses):
         self.index = index
         self.statement = statement
         self.defs = defs
         self.uses = uses
+        self.ordered_uses = ordered_uses
         self.successors = set()
         self.predecessors = set()
         self.memory = None
@@ -112,6 +114,10 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
 
     #: Ordering policy applied to every block; see the module docstring.
     policy = os.environ.get("NUMBA_CUDA_MLIR_BLOCK_SCHEDULE", "anchor_dfs")
+    #: Sibling visit order inside cones: index, su, or su_asc.
+    ties = os.environ.get("NUMBA_CUDA_MLIR_BLOCK_SCHEDULE_TIES", "index")
+
+    _subtree_needs = None
 
     def run(self) -> bool:
         policy = self.state.metadata.get(
@@ -121,6 +127,7 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
             "source",
             "dfs",
             "anchor_dfs",
+            "alap_cones",
             "liveness",
             "longlived_dfs",
             "inject",
@@ -427,19 +434,27 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
         nodes = []
         for offset, statement in enumerate(movable):
             defs = set()
-            uses = set()
+            ordered_uses = []
             if isinstance(statement, ir.Assign):
                 defs.add(statement.target.name)
                 value = statement.value
                 if isinstance(value, ir.Expr):
-                    uses.update(var.name for var in value.list_vars())
+                    ordered_uses = [var.name for var in value.list_vars()]
                 elif isinstance(value, ir.Var):
-                    uses.add(value.name)
+                    ordered_uses = [value.name]
             elif isinstance(statement, ir.Del):
-                uses.add(statement.value)
+                ordered_uses = [statement.value]
             else:
-                uses.update(var.name for var in statement.list_vars())
-            nodes.append(_Node(offset, statement, defs, uses))
+                ordered_uses = [var.name for var in statement.list_vars()]
+            nodes.append(
+                _Node(
+                    offset,
+                    statement,
+                    defs,
+                    set(ordered_uses),
+                    tuple(ordered_uses),
+                )
+            )
 
         def add_edge(before, after):
             if before is after:
@@ -623,6 +638,7 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
                         "defs": sorted(node.defs & scalar_names),
                         "all_defs": sorted(node.defs),
                         "uses": sorted(node.uses),
+                        "usel": list(node.ordered_uses),
                         "mem": node.memory,
                         "succ": sorted(node.successors),
                     }
@@ -649,6 +665,7 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
         elif policy == "source":
             order = None
         else:
+            self._compute_subtree_needs(nodes)
             order = self._order_nodes(nodes, policy, live_out)
         peak_source = self._modeled_peak(
             nodes, range(len(nodes)), scalar_names, live_out
@@ -713,7 +730,123 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
     def _order_nodes(self, nodes, policy, live_out):
         if policy == "liveness":
             return self._order_liveness(nodes, live_out)
+        if policy == "alap_cones":
+            return self._order_alap_cones(nodes)
         return self._order_dfs(nodes, live_out, policy)
+
+    def _predecessor_order(self, nodes, node):
+        """Predecessors by the configured sibling order."""
+
+        needs = self._subtree_needs
+        if needs is None:
+            return sorted(node.predecessors)
+        if type(self).ties == "su":
+            return sorted(
+                node.predecessors, key=lambda p: (-needs[p], p)
+            )
+        return sorted(node.predecessors, key=lambda p: (needs[p], p))
+
+    def _compute_subtree_needs(self, nodes):
+        """Sethi-Ullman register-need approximation over the pred DAG."""
+
+        if type(self).ties == "index":
+            self._subtree_needs = None
+            return
+        needs = [1] * len(nodes)
+        for node in nodes:
+            requirements = sorted(
+                (
+                    needs[p]
+                    for p in node.predecessors
+                    if not isinstance(nodes[p].statement, ir.Del)
+                ),
+                reverse=True,
+            )
+            best = 1
+            for position, requirement in enumerate(requirements):
+                if requirement + position > best:
+                    best = requirement + position
+            needs[node.index] = best
+        self._subtree_needs = needs
+
+    def _order_alap_cones(self, nodes):
+        """Anchor cones permuted to their latest legal position."""
+
+        def is_del(index):
+            return isinstance(nodes[index].statement, ir.Del)
+
+        anchors = []
+        for node in nodes:
+            if is_del(node.index):
+                continue
+            memory_kind = node.memory[0] if node.memory else None
+            terminal = not any(
+                not is_del(successor) for successor in node.successors
+            )
+            if memory_kind in ("store", "barrier") or terminal:
+                anchors.append(node)
+
+        claimed = [False] * len(nodes)
+        units = []
+        unit_of = {}
+        for anchor in anchors:
+            if claimed[anchor.index]:
+                continue
+            members = []
+            stack = [(anchor, None)]
+            while stack:
+                node, iterator = stack.pop()
+                if iterator is None:
+                    if claimed[node.index]:
+                        continue
+                    iterator = iter(self._predecessor_order(nodes, node))
+                advanced = False
+                for predecessor in iterator:
+                    if not claimed[predecessor] and not is_del(predecessor):
+                        stack.append((node, iterator))
+                        stack.append((nodes[predecessor], None))
+                        advanced = True
+                        break
+                if not advanced and not claimed[node.index]:
+                    claimed[node.index] = True
+                    members.append(node.index)
+                    unit_of[node.index] = len(units)
+            if members:
+                units.append(members)
+
+        unit_count = len(units)
+        unit_pred = [set() for _ in range(unit_count)]
+        unit_succ = [set() for _ in range(unit_count)]
+        for node in nodes:
+            if is_del(node.index):
+                continue
+            unit = unit_of[node.index]
+            for successor in node.successors:
+                if is_del(successor):
+                    continue
+                other = unit_of[successor]
+                if other != unit:
+                    unit_succ[unit].add(other)
+                    unit_pred[other].add(unit)
+
+        # Backward Kahn, lowest unit index first, then reverse.
+        remaining = [len(unit_succ[u]) for u in range(unit_count)]
+        ready = [u for u in range(unit_count) if remaining[u] == 0]
+        heapq.heapify(ready)
+        reverse_order = []
+        while ready:
+            unit = heapq.heappop(ready)
+            reverse_order.append(unit)
+            for predecessor in unit_pred[unit]:
+                remaining[predecessor] -= 1
+                if remaining[predecessor] == 0:
+                    heapq.heappush(ready, predecessor)
+        if len(reverse_order) != unit_count:
+            return None
+        order = []
+        for unit in reversed(reverse_order):
+            order.extend(units[unit])
+        return self._splice_dels(nodes, order)
 
     def _order_dfs(self, nodes, live_out, policy):
         """Predecessor postorder; Dels splice back after their last predecessor."""
@@ -764,7 +897,7 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
                 if iterator is None:
                     if scheduled[node.index]:
                         continue
-                    iterator = iter(sorted(node.predecessors))
+                    iterator = iter(self._predecessor_order(nodes, node))
                 advanced = False
                 for predecessor_index in iterator:
                     if not scheduled[predecessor_index] and not is_del(
@@ -778,11 +911,16 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
                     scheduled[node.index] = True
                     order.append(node.index)
 
-        # Splice each Del directly after its last emitted predecessor.
+        return self._splice_dels(nodes, order)
+
+    @staticmethod
+    def _splice_dels(nodes, order):
+        """Insert each Del directly after its last emitted predecessor."""
+
         position = {index: pos for pos, index in enumerate(order)}
         insertions = {}
         for node in nodes:
-            if not is_del(node.index):
+            if not isinstance(node.statement, ir.Del):
                 continue
             anchor = max(
                 (
