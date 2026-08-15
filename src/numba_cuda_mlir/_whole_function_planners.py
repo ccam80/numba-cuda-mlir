@@ -48,10 +48,9 @@ class WholeFunctionPlanner:
 class TypedWholeFunctionPlanner(WholeFunctionPlanner):
     """Base class for whole-function planners over typed Numba IR.
 
-    Typed planners run after type inference, overload inlining, typed rewrites,
-    and IR legalization, immediately before lowering to MLIR.  Consequently,
-    ``state.typemap`` and ``state.calltypes`` describe every value and call in
-    the fully inlined function body.
+    Typed planners run on the fully inlined, legalized, typed IR
+    immediately before lowering to MLIR, so ``state.typemap`` and
+    ``state.calltypes`` cover the whole function body.
     """
 
 
@@ -123,9 +122,7 @@ class _TypedWholeFunctionPlannerRegistry(_WholeFunctionPlannerRegistry):
 
     @staticmethod
     def _repair_ir(func_ir) -> None:
-        # Typed planners retain the CFG and SSA names.  Rebuilding definitions
-        # is sufficient and, unlike the untyped repair, cannot invalidate the
-        # typemap or calltypes established by type inference.
+        # Rebuild definitions only; the typemap and calltypes stay valid.
         func_ir._reset_analysis_variables()
         func_ir._definitions = build_definitions(func_ir.blocks)
         for block in func_ir.blocks.values():

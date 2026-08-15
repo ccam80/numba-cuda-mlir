@@ -1,36 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Intra-block scheduling of typed Numba IR before MLIR lowering.
+"""Intra-block statement scheduling of typed Numba IR.
 
-The scheduler reorders the statements of each basic block without
-changing the CFG, the SSA names, or the set of statements.  Legality is
-expressed as a per-block dependency DAG:
-
-- flow edges from each in-block definition to its in-block uses;
-- a sequential chain over every statement touching a multiply-defined
-  name (non-SSA names keep their original relative order);
-- per-alias-root memory chains: stores to a root are kept in order,
-  loads never cross a store to the same root, and statements whose
-  alias root is unknown act as members of every root's chain;
-- effectful or unrecognised statements are scheduling barriers;
-- ``ir.Del`` statements stay after every prior statement that
-  references their variable;
-- leading ``Arg`` assignments are pinned to the block head, and blocks
-  with phi assignments beyond that prefix are left untouched.
-
-Any topological order of that DAG is a legal statement order.  The
-``policy`` chooses which one to emit:
-
-- ``"source"``: keep the original order (identity control);
-- ``"dfs"``: roots-first predecessor postorder — each externally
-  consumed value is emitted together with the full chain that computes
-  it, mirroring CuBIE's ``liveness_auto`` source ordering;
-- ``"liveness"``: greedy list schedule that at every step prefers the
-  ready statement closing the most live values;
-- ``"longlived_dfs"``: the ``"dfs"`` emission with roots reordered so
-  chains feeding block-live-out (long-lived) values are emitted first
-  and one-shot chains stay serial and late.
+Statements reorder within each basic block under a dependency DAG of
+flow edges, non-SSA and loop-carried name chains, per-element memory
+chains, effect barriers, and Del lifetime pins.  ``policy`` selects the
+emitted topological order: ``source`` (original), ``dfs`` (roots-first
+predecessor postorder), ``liveness`` (greedy live-count list schedule),
+``longlived_dfs`` (dfs with live-out chains first), or ``inject``
+(explicit per-block orders from a JSON file).
 """
 
 import gzip
@@ -213,13 +192,10 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
     def _alias_roots(self, func_ir, typemap):
         """Map each array-typed name to ``(root, element offset)``.
 
-        Roots are argument names, allocating calls, or the sentinel
-        ``None`` for unknown provenance.  Views (``getitem``/
-        ``static_getitem``/``cast`` returning an array) share their
-        parent's root.  The offset is the constant element distance
-        from the root's first element for unit-step one-dimensional
-        view chains, or ``None`` when it cannot be proven — accesses
-        through such views serialise against their whole root.
+        Roots are arguments, allocating calls, or ``None`` for unknown
+        provenance; views share their parent's root.  The offset is the
+        constant element distance from the root for unit-step 1-D view
+        chains, or ``None`` when unprovable.
         """
 
         roots = {}
@@ -304,13 +280,7 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
     # -- liveness ------------------------------------------------------
 
     def _block_live_out(self, func_ir):
-        """Names referenced by any other block or a terminator, per block.
-
-        A backward dataflow fixpoint is unnecessary for scheduling
-        priorities: a value defined here and referenced anywhere else
-        outlives this block, which is the only distinction the
-        policies consume.
-        """
+        """Names referenced by any other block or a terminator, per block."""
 
         blocks_referencing = {}
         block_names = {}
@@ -384,14 +354,7 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
         return module.split(".")[0] in _PURE_CALL_MODULE_ROOTS
 
     def _constant_index(self, func_ir, operation):
-        """Return a hashable constant index for a memory operation.
-
-        ``None`` means the index could not be resolved to a
-        non-negative constant, so the operation conservatively
-        serialises against every element of its alias root.  Negative
-        constants stay unresolved because they alias an unknown
-        positive element.
-        """
+        """Return a non-negative constant index, or ``None`` if unresolved."""
 
         index = getattr(operation, "index", None)
         if isinstance(index, ir.Var):
@@ -476,12 +439,7 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
                 before.successors.add(after.index)
                 after.predecessors.add(before.index)
 
-        # Flow edges and non-SSA chains.  A name is chained (all its
-        # touching statements keep their original relative order) when
-        # it is defined more than once, or when a use precedes its
-        # definition — the loop-carried pattern left by phi stripping,
-        # where the early use reads the previous iteration's value and
-        # must not cross the redefinition.
+        # Chain multi-def and use-before-def names in original order.
         def_site = {}
         chained = set()
         for node in nodes:
@@ -518,11 +476,7 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
             for name in node.defs | node.uses:
                 references.setdefault(name, []).append(node.index)
 
-        # Memory chains and barriers.  Chains are keyed by
-        # ``(alias root, constant index)`` so stores to distinct
-        # elements of the same array reorder freely; operations with an
-        # unresolvable index serialise within their root, and
-        # operations with an unknown root act as barriers.
+        # Memory chains keyed by (alias root, constant index).
         func_ir = self.state.func_ir
         last_store = {}
         last_unknown_store = {}
@@ -573,8 +527,7 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
                 else:
                     kind = "barrier"
             elif isinstance(statement, ir.Del):
-                # Deleting an array ends its storage lifetime: pin it
-                # against every memory operation on the same root.
+                # An array del serialises against its whole root.
                 if isinstance(typemap.get(statement.value), types.Array):
                     kind = "store"
                     root, _ = roots.get(statement.value, (None, None))
@@ -714,11 +667,7 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
 
     @staticmethod
     def _modeled_peak(nodes, order, scalar_names, live_out):
-        """Maximum simultaneously live scalar count over an order.
-
-        A scalar becomes live at its definition and dies at its last
-        non-``Del`` use; values in ``live_out`` never die.
-        """
+        """Peak live scalar count over an order; live_out names never die."""
 
         order = list(order)
         defined = set()
@@ -760,16 +709,9 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
     def _order_dfs(self, nodes, live_out, longlived_first):
         """Roots-first predecessor postorder over non-``Del`` nodes.
 
-        A root is a node whose value (or effect) is only consumed
-        outside the block.  Emitting each root's unscheduled
-        predecessor cone in postorder keeps each chain serial, so
-        one-shot temporaries die immediately.  ``Del`` statements are
-        excluded from the walk — every value's Del trails the graph, so
-        treating Dels as roots would replay the source structure — and
-        are spliced back directly after their last predecessor.  With
-        ``longlived_first`` the roots defining block-live-out names are
-        emitted before effect-only roots, so long-lived values are
-        computed early and the short chains run late and serial.
+        Dels are excluded from the walk and spliced back after their
+        last predecessor.  ``longlived_first`` emits roots defining
+        block-live-out names before effect-only roots.
         """
 
         def is_del(index):
@@ -842,15 +784,12 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
     def _order_liveness(self, nodes, live_out):
         """Greedy list schedule minimising the live-value count.
 
-        At every step the ready statement with the best
-        ``(values opened) - (values closed)`` balance runs first, with
-        the original position as the tie-break.  Scores go stale as
-        values die, so heap entries are lazily re-scored on pop.
+        Ready statements run best ``opened - closed`` balance first,
+        original position as tie-break; stale heap entries re-score on
+        pop.
         """
 
-        # Dels are lifetime markers, not the dataflow use that keeps a
-        # value alive: count only non-Del uses, and give Dels a strongly
-        # negative score so each one chases its last use immediately.
+        # Count only non-Del uses; Dels chase their last use.
         remaining_uses = {}
         for node in nodes:
             if isinstance(node.statement, ir.Del):

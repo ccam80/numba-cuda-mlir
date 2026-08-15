@@ -136,8 +136,7 @@ def test_source_policy_never_reorders(isolated_typed_planners):
 
 @pytest.mark.skipif(not cuda.is_available(), reason="CUDA GPU required")
 def test_scheduling_preserves_statement_multiset(isolated_typed_planners):
-    # The pre-schedule capture registers before the scheduler and the
-    # post-schedule capture after it, so one compile yields both views.
+    # One compile: pre-schedule capture registers first, post after.
     baseline_cls, baseline = _capture_bodies()
     register_typed_planner(baseline_cls)
     scheduled = _run_scheduled_kernel("dfs")

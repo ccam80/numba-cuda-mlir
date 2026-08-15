@@ -7,19 +7,16 @@
 Typed whole-function planners
 =============================
 
-Typed planners run over the final typed Numba IR of a kernel — after
-type inference, overload inlining, typed rewrites, and IR legalization,
-immediately before lowering to MLIR.  At that point ``state.typemap``
-and ``state.calltypes`` describe every value and call in the fully
-inlined function body, so a planner sees the whole kernel at once.
+Typed planners run on the fully inlined, legalized, typed Numba IR
+immediately before lowering to MLIR; ``state.typemap`` and
+``state.calltypes`` cover the whole function body.
 
 .. py:function:: register_typed_planner(planner_cls)
 
-   Register a :py:class:`TypedWholeFunctionPlanner` subclass.  Register
-   planners before compiling any dispatcher that needs them.  While any
-   planner registry is populated, persistent dispatch-cache loads and
-   saves are disabled, because cache keys do not describe planner
-   behaviour.
+   Register a :py:class:`TypedWholeFunctionPlanner` subclass before
+   compiling any dispatcher that needs it.  While any planner registry
+   is populated, persistent dispatch-cache loads and saves are
+   disabled.
 
 .. py:class:: TypedWholeFunctionPlanner
 
@@ -45,8 +42,7 @@ order:
 
 ``dfs``
    Roots-first predecessor postorder: every externally consumed value
-   is emitted together with the chain that computes it, so one-shot
-   temporaries die immediately.
+   is emitted together with the chain that computes it.
 
 ``liveness``
    Greedy list schedule preferring statements that close the most live
