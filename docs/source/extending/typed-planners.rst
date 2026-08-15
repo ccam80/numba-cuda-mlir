@@ -40,9 +40,13 @@ order:
 ``source``
    Keep the original order (measurement control).
 
+``anchor_dfs``
+   Default.  Predecessor-postorder cones pulled by every store,
+   barrier, and terminal node in source order.
+
 ``dfs``
-   Roots-first predecessor postorder: every externally consumed value
-   is emitted together with the chain that computes it.
+   Terminal-rooted predecessor postorder: every externally consumed
+   value is emitted together with the chain that computes it.
 
 ``liveness``
    Greedy list schedule preferring statements that close the most live

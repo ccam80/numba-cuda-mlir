@@ -6,10 +6,12 @@
 Statements reorder within each basic block under a dependency DAG of
 flow edges, non-SSA and loop-carried name chains, per-element memory
 chains, effect barriers, and Del lifetime pins.  ``policy`` selects the
-emitted topological order: ``source`` (original), ``dfs`` (roots-first
-predecessor postorder), ``liveness`` (greedy live-count list schedule),
-``longlived_dfs`` (dfs with live-out chains first), or ``inject``
-(explicit per-block orders from a JSON file).
+emitted topological order: ``source`` (original), ``anchor_dfs``
+(predecessor postorder cones pulled by stores, barriers, and terminals
+in source order), ``dfs`` (terminal-rooted postorder), ``liveness``
+(greedy live-count list schedule), ``longlived_dfs`` (dfs with
+live-out chains first), or ``inject`` (explicit per-block orders from
+a JSON file).
 """
 
 import gzip
@@ -109,13 +111,20 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
     """Reorder statements inside each block of the typed IR."""
 
     #: Ordering policy applied to every block; see the module docstring.
-    policy = os.environ.get("NUMBA_CUDA_MLIR_BLOCK_SCHEDULE", "dfs")
+    policy = os.environ.get("NUMBA_CUDA_MLIR_BLOCK_SCHEDULE", "anchor_dfs")
 
     def run(self) -> bool:
         policy = self.state.metadata.get(
             "typed_block_scheduler_policy", type(self).policy
         )
-        if policy not in {"source", "dfs", "liveness", "longlived_dfs", "inject"}:
+        if policy not in {
+            "source",
+            "dfs",
+            "anchor_dfs",
+            "liveness",
+            "longlived_dfs",
+            "inject",
+        }:
             raise ValueError(f"unknown block schedule policy {policy!r}")
         func_ir = self.state.func_ir
         typemap = self.state.typemap
@@ -704,28 +713,46 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
     def _order_nodes(self, nodes, policy, live_out):
         if policy == "liveness":
             return self._order_liveness(nodes, live_out)
-        return self._order_dfs(nodes, live_out, policy == "longlived_dfs")
+        return self._order_dfs(nodes, live_out, policy)
 
-    def _order_dfs(self, nodes, live_out, longlived_first):
+    def _order_dfs(self, nodes, live_out, policy):
         """Roots-first predecessor postorder over non-``Del`` nodes.
 
         Dels are excluded from the walk and spliced back after their
-        last predecessor.  ``longlived_first`` emits roots defining
-        block-live-out names before effect-only roots.
+        last predecessor.  ``anchor_dfs`` roots every store, barrier,
+        and terminal node in source order; ``dfs`` roots terminal nodes
+        only; ``longlived_dfs`` emits terminal roots defining
+        block-live-out names first.
         """
 
         def is_del(index):
             return isinstance(nodes[index].statement, ir.Del)
 
-        root_nodes = [
-            node
-            for node in nodes
-            if not is_del(node.index)
-            and not any(
+        def is_terminal(node):
+            return not any(
                 not is_del(successor) for successor in node.successors
             )
-        ]
-        if longlived_first:
+
+        if policy == "anchor_dfs":
+            root_nodes = [
+                node
+                for node in nodes
+                if not is_del(node.index)
+                and (
+                    (
+                        node.memory is not None
+                        and node.memory[0] in ("store", "barrier")
+                    )
+                    or is_terminal(node)
+                )
+            ]
+        else:
+            root_nodes = [
+                node
+                for node in nodes
+                if not is_del(node.index) and is_terminal(node)
+            ]
+        if policy == "longlived_dfs":
 
             def root_key(node):
                 defines_live_out = bool(node.defs & live_out)
