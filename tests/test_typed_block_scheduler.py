@@ -162,59 +162,61 @@ def test_scheduling_preserves_statement_multiset(isolated_typed_planners):
     assert moved > 0
 
 
+def _statement_accesses(statement):
+    """Return (defs, uses) name sets mirroring the scheduler's view."""
+
+    defs = set()
+    uses = set()
+    if isinstance(statement, ir.Assign):
+        defs.add(statement.target.name)
+        value = statement.value
+        if isinstance(value, ir.Expr):
+            uses |= {var.name for var in value.list_vars()}
+        elif isinstance(value, ir.Var):
+            uses.add(value.name)
+    elif isinstance(statement, ir.Del):
+        uses.add(statement.value)
+    else:
+        uses |= {var.name for var in statement.list_vars()}
+    return defs, uses
+
+
 @pytest.mark.skipif(not cuda.is_available(), reason="CUDA GPU required")
 @pytest.mark.parametrize("policy", ["dfs", "liveness", "longlived_dfs"])
 def test_schedule_respects_dependencies(isolated_typed_planners, policy):
-    """Defs precede uses, stores stay ordered, dels trail references."""
+    """Every same-name def/use conflict keeps its original order."""
 
-    captured = _run_scheduled_kernel(policy)
-    for label, body in captured.items():
+    baseline_cls, baseline = _capture_bodies()
+    register_typed_planner(baseline_cls)
+    scheduled = _run_scheduled_kernel(policy)
+    for label, body in scheduled.items():
         if not isinstance(label, int):
             continue
-        defined_positions = {}
-        for position, statement in enumerate(body):
-            if isinstance(statement, ir.Assign):
-                defined_positions.setdefault(statement.target.name, position)
-        for position, statement in enumerate(body):
-            if isinstance(statement, ir.Assign):
-                value = statement.value
-                names = (
-                    [var.name for var in value.list_vars()]
-                    if isinstance(value, ir.Expr)
-                    else [value.name]
-                    if isinstance(value, ir.Var)
-                    else []
-                )
-            elif isinstance(statement, ir.Del):
-                names = []
-            else:
-                names = [var.name for var in statement.list_vars()]
-            for name in names:
-                if name in defined_positions:
-                    assert defined_positions[name] <= position, (
-                        f"use of {name} at {position} precedes its "
-                        f"definition in block {label}"
-                    )
-        del_positions = {
-            statement.value: position
-            for position, statement in enumerate(body)
-            if isinstance(statement, ir.Del)
+        original = baseline[label]
+        original_position = {
+            id(statement): position
+            for position, statement in enumerate(original)
         }
+        accesses = {}
         for position, statement in enumerate(body):
-            if isinstance(statement, ir.Del):
-                continue
-            if isinstance(statement, ir.Assign):
-                referenced = {statement.target.name}
-                value = statement.value
-                if isinstance(value, ir.Expr):
-                    referenced |= {var.name for var in value.list_vars()}
-                elif isinstance(value, ir.Var):
-                    referenced.add(value.name)
-            else:
-                referenced = {var.name for var in statement.list_vars()}
-            for name in referenced:
-                if name in del_positions:
-                    assert position <= del_positions[name], (
-                        f"{name} referenced at {position} after its del "
-                        f"in block {label}"
+            defs, uses = _statement_accesses(statement)
+            for name in defs | uses:
+                accesses.setdefault(name, []).append(
+                    (position, statement, name in defs)
+                )
+        for name, members in accesses.items():
+            for first_index in range(len(members)):
+                for second_index in range(first_index + 1, len(members)):
+                    one_pos, one_stmt, one_def = members[first_index]
+                    two_pos, two_stmt, two_def = members[second_index]
+                    if not (one_def or two_def):
+                        continue  # use-use pairs commute
+                    original_one = original_position[id(one_stmt)]
+                    original_two = original_position[id(two_stmt)]
+                    assert (original_one < original_two) == (
+                        one_pos < two_pos
+                    ), (
+                        f"conflict on {name} in block {label} reordered: "
+                        f"orig {original_one}/{original_two} -> "
+                        f"new {one_pos}/{two_pos}"
                     )

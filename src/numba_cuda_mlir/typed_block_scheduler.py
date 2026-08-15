@@ -476,14 +476,24 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
                 before.successors.add(after.index)
                 after.predecessors.add(before.index)
 
-        # Flow edges and non-SSA chains.
+        # Flow edges and non-SSA chains.  A name is chained (all its
+        # touching statements keep their original relative order) when
+        # it is defined more than once, or when a use precedes its
+        # definition — the loop-carried pattern left by phi stripping,
+        # where the early use reads the previous iteration's value and
+        # must not cross the redefinition.
         def_site = {}
-        multi_def = set()
+        chained = set()
         for node in nodes:
             for name in node.defs:
                 if name in def_site:
-                    multi_def.add(name)
+                    chained.add(name)
                 def_site.setdefault(name, node)
+        for node in nodes:
+            for name in node.uses:
+                site = def_site.get(name)
+                if site is not None and site.index > node.index:
+                    chained.add(name)
         for node in nodes:
             for name in node.uses:
                 site = def_site.get(name)
@@ -492,7 +502,7 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
         touching = {}
         for node in nodes:
             for name in node.defs | node.uses:
-                if name in multi_def:
+                if name in chained:
                     previous = touching.get(name)
                     if previous is not None:
                         add_edge(previous, node)
