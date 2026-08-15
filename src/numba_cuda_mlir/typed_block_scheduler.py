@@ -716,14 +716,7 @@ class TypedBlockScheduler(TypedWholeFunctionPlanner):
         return self._order_dfs(nodes, live_out, policy)
 
     def _order_dfs(self, nodes, live_out, policy):
-        """Roots-first predecessor postorder over non-``Del`` nodes.
-
-        Dels are excluded from the walk and spliced back after their
-        last predecessor.  ``anchor_dfs`` roots every store, barrier,
-        and terminal node in source order; ``dfs`` roots terminal nodes
-        only; ``longlived_dfs`` emits terminal roots defining
-        block-live-out names first.
-        """
+        """Predecessor postorder; Dels splice back after their last predecessor."""
 
         def is_del(index):
             return isinstance(nodes[index].statement, ir.Del)

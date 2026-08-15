@@ -38,28 +38,22 @@ barriers, and ``Del`` lifetime pins.  The ``policy`` class attribute
 order:
 
 ``source``
-   Keep the original order (measurement control).
+   Keep the original order.
 
 ``anchor_dfs``
-   Default.  Predecessor-postorder cones pulled by every store,
-   barrier, and terminal node in source order.
+   Default: postorder cones pulled by stores, barriers, and terminals in source order.
 
 ``dfs``
-   Terminal-rooted predecessor postorder: every externally consumed
-   value is emitted together with the chain that computes it.
+   Terminal-rooted predecessor postorder.
 
 ``liveness``
-   Greedy list schedule preferring statements that close the most live
-   values.
+   Greedy list schedule closing the most live values first.
 
 ``longlived_dfs``
-   The ``dfs`` emission with chains feeding block-live-out values
-   emitted first.
+   ``dfs`` with chains feeding block-live-out values emitted first.
 
 ``inject``
-   Apply explicit per-block orders from the JSON file named by
-   ``NUMBA_CUDA_MLIR_BLOCK_SCHEDULE_ORDER`` (validated against the
-   dependency DAG).
+   Per-block orders from the ``NUMBA_CUDA_MLIR_BLOCK_SCHEDULE_ORDER`` JSON file.
 
 Setting ``NUMBA_CUDA_MLIR_BLOCK_SCHEDULE_DUMP`` writes the dependency
 graph of every large block to a gzip JSON file for offline ordering
