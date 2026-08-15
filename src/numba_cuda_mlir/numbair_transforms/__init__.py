@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Numba IR transformation passes for numba_cuda_mlir
 from numba_cuda_mlir.numba_cuda.core.compiler_lock import global_compiler_lock
+from numba_cuda_mlir.numba_cuda.core.compiler_machinery import LoweringPass
 from numba_cuda_mlir.numba_cuda.core.untyped_passes import (
     FunctionPass,
     register_pass,
@@ -16,7 +17,10 @@ from numba_cuda_mlir.numba_cuda.core import untyped_passes as untyped_passes_mod
 from numba_cuda_mlir.numba_cuda.core.typed_passes import PartialTypeInference
 from numba_cuda_mlir.numba_cuda.core import ir
 from numba_cuda_mlir.numba_cuda.misc.special import literal_unroll
-from numba_cuda_mlir._whole_function_planners import _planner_registry
+from numba_cuda_mlir._whole_function_planners import (
+    _planner_registry,
+    _typed_planner_registry,
+)
 
 
 @register_pass(mutates_CFG=True, analysis_only=False)
@@ -133,3 +137,16 @@ class PostInlineWholeFunctionPlanners(FunctionPass):
 
     def run_pass(self, state):
         return _planner_registry.apply(state)
+
+
+@register_pass(mutates_CFG=False, analysis_only=False)
+class TypedWholeFunctionPlanners(LoweringPass):
+    """Run extension planners over legalized, fully typed Numba IR."""
+
+    _name = "typed_whole_function_planners"
+
+    def __init__(self):
+        LoweringPass.__init__(self)
+
+    def run_pass(self, state):
+        return _typed_planner_registry.apply(state)

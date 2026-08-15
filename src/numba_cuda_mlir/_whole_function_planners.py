@@ -45,6 +45,16 @@ class WholeFunctionPlanner:
         raise NotImplementedError
 
 
+class TypedWholeFunctionPlanner(WholeFunctionPlanner):
+    """Base class for whole-function planners over typed Numba IR.
+
+    Typed planners run after type inference, overload inlining, typed rewrites,
+    and IR legalization, immediately before lowering to MLIR.  Consequently,
+    ``state.typemap`` and ``state.calltypes`` describe every value and call in
+    the fully inlined function body.
+    """
+
+
 class _WholeFunctionPlannerRegistry:
     def __init__(self):
         self._planners = []
@@ -99,6 +109,30 @@ class _WholeFunctionPlannerRegistry:
 
 
 _planner_registry = _WholeFunctionPlannerRegistry()
+
+
+class _TypedWholeFunctionPlannerRegistry(_WholeFunctionPlannerRegistry):
+    """Registry whose entries must consume the typed-planner contract."""
+
+    def register(self, planner_cls):
+        if not isinstance(planner_cls, type) or not issubclass(
+            planner_cls, TypedWholeFunctionPlanner
+        ):
+            raise TypeError(f"{planner_cls!r} is not a TypedWholeFunctionPlanner subclass")
+        return super().register(planner_cls)
+
+    @staticmethod
+    def _repair_ir(func_ir) -> None:
+        # Typed planners retain the CFG and SSA names.  Rebuilding definitions
+        # is sufficient and, unlike the untyped repair, cannot invalidate the
+        # typemap or calltypes established by type inference.
+        func_ir._reset_analysis_variables()
+        func_ir._definitions = build_definitions(func_ir.blocks)
+        for block in func_ir.blocks.values():
+            block.verify()
+
+
+_typed_planner_registry = _TypedWholeFunctionPlannerRegistry()
 
 
 def require_launch_config(state) -> dict:
@@ -159,9 +193,21 @@ def register_planner(planner_cls):
     return _planner_registry.register(planner_cls)
 
 
+def register_typed_planner(planner_cls):
+    """Register a planner that runs over fully typed, inlined Numba IR.
+
+    Register planners before compiling any dispatcher that needs them.
+    Registration does not invalidate existing in-memory overloads.
+    """
+
+    return _typed_planner_registry.register(planner_cls)
+
+
 __all__ = [
     "WholeFunctionPlanner",
+    "TypedWholeFunctionPlanner",
     "register_planner",
+    "register_typed_planner",
     "require_launch_config",
     "set_required_dynamic_shared_memory",
 ]
