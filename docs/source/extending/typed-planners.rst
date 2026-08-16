@@ -30,12 +30,8 @@ package.
    .. py:attribute:: cache_safe
 
       Whether persistent dispatch-cache loads and saves may proceed
-      while this planner is registered.  Defaults to ``False``: the
-      dispatch-cache key does not include planner effects, so a
-      cached artifact compiled without the planner would otherwise be
-      served for a compile the planner would have changed.  Set it to
-      ``True`` only when the planner's effect is deterministic and
+      while this planner is registered (default ``False``).  Set it
+      to ``True`` only when the planner's effect is deterministic and
       the embedder keys its own cache identity on the planner's
-      configuration.  While any registered planner is not
-      cache-safe, persistent dispatch-cache loads and saves are
-      disabled.
+      configuration; while any registered planner is not cache-safe,
+      dispatch caching is disabled.

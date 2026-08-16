@@ -29,11 +29,9 @@ class WholeFunctionPlanner:
     Boolean indicating whether they changed the IR.
 
     ``cache_safe`` declares whether persistent dispatch-cache loads and saves
-    may proceed while this planner is registered. The default is ``False``:
-    the cache key does not include planner effects, so a cached artifact
-    compiled without the planner would be served for a compile the planner
-    would have changed. A planner whose effect is deterministic *and* keyed
-    into the embedder's own cache identity may set ``cache_safe = True``.
+    may proceed while this planner is registered; the cache key does not
+    include planner effects, so only planners whose effect is deterministic
+    and keyed into the embedder's own cache identity set it to ``True``.
     """
 
     cache_safe = False
