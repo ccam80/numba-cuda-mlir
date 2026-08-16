@@ -27,7 +27,16 @@ class WholeFunctionPlanner:
     Planners run after device-function inlining and before type inference. They
     may inspect and rewrite any block in ``state.func_ir`` and must return a
     Boolean indicating whether they changed the IR.
+
+    ``cache_safe`` declares whether persistent dispatch-cache loads and saves
+    may proceed while this planner is registered. The default is ``False``:
+    the cache key does not include planner effects, so a cached artifact
+    compiled without the planner would be served for a compile the planner
+    would have changed. A planner whose effect is deterministic *and* keyed
+    into the embedder's own cache identity may set ``cache_safe = True``.
     """
+
+    cache_safe = False
 
     def __init__(self, state):
         self.state = state
@@ -73,6 +82,15 @@ class _WholeFunctionPlannerRegistry:
     def has_planners(self) -> bool:
         with self._lock:
             return bool(self._planners)
+
+    @property
+    def all_cache_safe(self) -> bool:
+        """Whether every registered planner permits dispatch caching."""
+        with self._lock:
+            return all(
+                getattr(planner_cls, "cache_safe", False)
+                for planner_cls in self._planners
+            )
 
     def apply(self, state) -> bool:
         """Run each planner once with coherent IR and repair every mutation."""

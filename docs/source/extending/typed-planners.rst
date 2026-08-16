@@ -9,14 +9,16 @@ Typed whole-function planners
 
 Typed planners run on the fully inlined, legalized, typed Numba IR
 immediately before lowering to MLIR; ``state.typemap`` and
-``state.calltypes`` cover the whole function body.
+``state.calltypes`` cover the whole function body.  This is the hook
+an embedding library uses to apply its own whole-kernel IR passes —
+for example a statement scheduler that reorders each basic block
+under a dependency DAG — without carrying compiler passes in this
+package.
 
 .. py:function:: register_typed_planner(planner_cls)
 
    Register a :py:class:`TypedWholeFunctionPlanner` subclass before
-   compiling any dispatcher that needs it.  While any planner registry
-   is populated, persistent dispatch-cache loads and saves are
-   disabled.
+   compiling any dispatcher that needs it.
 
 .. py:class:: TypedWholeFunctionPlanner
 
@@ -25,42 +27,15 @@ immediately before lowering to MLIR; ``state.typemap`` and
    registry rebuilds ``func_ir`` definitions and re-verifies every
    block after a modifying planner.
 
-Intra-block statement scheduling
---------------------------------
+   .. py:attribute:: cache_safe
 
-:py:class:`numba_cuda_mlir.typed_block_scheduler.TypedBlockScheduler`
-is a typed planner that reorders the statements of each basic block
-without changing the CFG, the SSA names, or the statement set.
-Legality is a per-block dependency DAG: SSA flow edges, per-element
-memory chains keyed on ``(alias root, constant index)``, effect
-barriers, and ``Del`` lifetime pins.  The ``policy`` class attribute
-(default from ``NUMBA_CUDA_MLIR_BLOCK_SCHEDULE``) selects the emitted
-order:
-
-``source``
-   Keep the original order.
-
-``anchor_dfs``
-   Default: postorder cones pulled by stores, barriers, and terminals in source order.
-
-``dfs``
-   Terminal-rooted predecessor postorder.
-
-``alap_cones``
-   Anchor cones permuted to their latest legal position.
-
-``liveness``
-   Greedy list schedule closing the most live values first.
-
-``longlived_dfs``
-   ``dfs`` with chains feeding block-live-out values emitted first.
-
-``inject``
-   Per-block orders from the ``NUMBA_CUDA_MLIR_BLOCK_SCHEDULE_ORDER`` JSON file.
-
-Setting ``NUMBA_CUDA_MLIR_BLOCK_SCHEDULE_DUMP`` writes the dependency
-graph of every large block to a gzip JSON file for offline ordering
-experiments; the chosen order can be injected back with the ``inject``
-policy.  Compile metadata records per-compile statistics under the
-``typed_block_scheduler`` key, including the modeled live-scalar peak
-of the source and scheduled orders.
+      Whether persistent dispatch-cache loads and saves may proceed
+      while this planner is registered.  Defaults to ``False``: the
+      dispatch-cache key does not include planner effects, so a
+      cached artifact compiled without the planner would otherwise be
+      served for a compile the planner would have changed.  Set it to
+      ``True`` only when the planner's effect is deterministic and
+      the embedder keys its own cache identity on the planner's
+      configuration.  While any registered planner is not
+      cache-safe, persistent dispatch-cache loads and saves are
+      disabled.
