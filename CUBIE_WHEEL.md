@@ -70,9 +70,8 @@ git cherry-pick <packaging commits from old cubie-wheel>
 - Bump `VERSION`, force-push the recreated branch to `cubie-wheel`.
 
 A rebuild request means the full cycle: recreate the branch, build in
-CI, install a built wheel in a fresh cubie env, run the validation
-suites below, and publish. Stop before publishing only when
-validation fails.
+CI, validate a built wheel in a fresh cubie env (suites below), and
+publish. Stop before publishing only when validation fails.
 
 ## Routine: add a new native-code patch
 
