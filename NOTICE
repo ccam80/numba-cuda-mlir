@@ -7,7 +7,8 @@ numba-cuda-mlir, produced by the CuBIE project
 (https://github.com/ccam80/cubie) from the `cubie-wheel` branch of
 https://github.com/ccam80/numba-cuda-mlir. It is not published or endorsed
 by NVIDIA. The modifications are the native-code (C++) fixes submitted to
-NVIDIA/numba-cuda-mlir as pull requests #255 and #225;
+NVIDIA/numba-cuda-mlir as pull requests #255 and #225, and the
+typed-planner hook from the fork's codex/lean-typed-scheduler branch;
 the branch is otherwise identical to the upstream base recorded in the
 release notes of each build. The import package remains `numba_cuda_mlir`.
 --------------------------------------------------------------------------------

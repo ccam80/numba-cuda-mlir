@@ -27,7 +27,9 @@ from numba_cuda_mlir.lowering_registry import LoweringRegistry
 from numba_cuda_mlir.extending.argument_handler import ArgumentHandler
 from numba_cuda_mlir._whole_function_planners import (
     WholeFunctionPlanner,
+    TypedWholeFunctionPlanner,
     register_planner,
+    register_typed_planner,
     require_launch_config,
     set_required_dynamic_shared_memory,
 )
@@ -41,6 +43,7 @@ register_model = functools.partial(register, mlir_data_manager)
 __all__ = [
     "ArgumentHandler",
     "WholeFunctionPlanner",
+    "TypedWholeFunctionPlanner",
     "intrinsic",
     "lowering_registry",
     "as_numba_type",
@@ -48,6 +51,7 @@ __all__ = [
     "lower_cast",
     "refresh_registries",
     "register_planner",
+    "register_typed_planner",
     "require_launch_config",
     "set_required_dynamic_shared_memory",
     "overload",

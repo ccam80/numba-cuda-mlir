@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"C:/local_working_projects/ncm-wheelbuild/build-modern/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

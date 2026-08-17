@@ -1,0 +1,17 @@
+C:/local_working_projects/ncm-wheelbuild/build-modern/CMakeFiles/intrinsics_gen.dir
+C:/local_working_projects/ncm-wheelbuild/build-modern/CMakeFiles/vt_gen.dir
+C:/local_working_projects/ncm-wheelbuild/build-modern/CMakeFiles/omp_gen.dir
+C:/local_working_projects/ncm-wheelbuild/build-modern/CMakeFiles/acc_gen.dir
+C:/local_working_projects/ncm-wheelbuild/build-modern/CMakeFiles/target_parser_gen.dir
+C:/local_working_projects/ncm-wheelbuild/build-modern/CMakeFiles/mlir-tablegen-targets.dir
+C:/local_working_projects/ncm-wheelbuild/build-modern/CMakeFiles/mlir-headers.dir
+C:/local_working_projects/ncm-wheelbuild/build-modern/CMakeFiles/mlir-generic-headers.dir
+C:/local_working_projects/ncm-wheelbuild/build-modern/CMakeFiles/mlir-doc.dir
+C:/local_working_projects/ncm-wheelbuild/build-modern/CMakeFiles/MLIRModernToNVVM.dir
+C:/local_working_projects/ncm-wheelbuild/build-modern/CMakeFiles/MLIRModernToNVVMSmoke.dir
+C:/local_working_projects/ncm-wheelbuild/build-modern/CMakeFiles/test.dir
+C:/local_working_projects/ncm-wheelbuild/build-modern/CMakeFiles/edit_cache.dir
+C:/local_working_projects/ncm-wheelbuild/build-modern/CMakeFiles/rebuild_cache.dir
+C:/local_working_projects/ncm-wheelbuild/build-modern/CMakeFiles/list_install_components.dir
+C:/local_working_projects/ncm-wheelbuild/build-modern/CMakeFiles/install.dir
+C:/local_working_projects/ncm-wheelbuild/build-modern/CMakeFiles/install/local.dir

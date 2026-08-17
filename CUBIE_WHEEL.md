@@ -17,16 +17,18 @@ the fork-side runbook.
 
 1. A union merge of the **native-code** PR branches only:
 
-   | Upstream PR | Branch | Binary target |
+   | PR | Branch | Target |
    |---|---|---|
    | NVIDIA#255 | `selective-fastmath` | MLIRToLLVM70 |
    | NVIDIA#225 | `fix-lineinfo-multi-file-pr` | MLIRToLLVM70 |
+   | ccam80#6 | `codex/lean-typed-scheduler` | Python typed-planner hook |
 
    Python-side upstream PRs stay **out** of this branch: cubie
    applies those at runtime via `cubie._mlir_compat`, which
    feature-detects the installed build and no-ops once a fix is
    present natively. Adding them here buys nothing and multiplies
-   merge conflicts.
+   merge conflicts. Exception: `register_typed_planner` must exist in
+   the installed wheel, so the typed-planner hook rides here.
 
 2. The packaging commits: distribution rename in `pyproject.toml`,
    version in `src/numba_cuda_mlir/VERSION`, provenance paragraph in
