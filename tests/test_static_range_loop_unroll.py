@@ -13,6 +13,7 @@ from numba_cuda_mlir._mlir.dialects import arith
 from numba_cuda_mlir._mlir.extras import types as T
 from numba_cuda_mlir.loop_annotations import STATIC_RANGE_LOOP_LOC_PREFIX
 from numba_cuda_mlir.lowering_utilities import context, try_fold_int_constant
+from numba_cuda_mlir.numba_cuda import config
 from numba_cuda_mlir.types import float32, int32
 
 N = 10
@@ -117,6 +118,42 @@ def test_constant_loop_with_break_and_continue():
 
     count, _ = _annotated_latches(kernel)
     assert count >= 1
+
+
+def _trip_count_kernel(n):
+    @cuda.jit
+    def kernel(out):
+        acc = 0
+        for i in range(n):
+            acc += i
+        out[0] = acc
+
+    out = cuda.to_device(np.zeros(1, dtype=np.int64))
+    kernel[1, 1](out)
+    assert out.copy_to_host()[0] == sum(range(n))
+    return kernel
+
+
+def test_trip_count_above_cap_is_not_annotated():
+    assert config.CUDA_UNROLL_MAX_TRIP_COUNT == 256
+    count, _ = _annotated_latches(_trip_count_kernel(256))
+    assert count == 1
+    count, mlir_text = _annotated_latches(_trip_count_kernel(257))
+    assert count == 0
+    assert "loop_annotation" not in mlir_text
+
+
+def test_trip_count_cap_is_configurable():
+    saved = config.CUDA_UNROLL_MAX_TRIP_COUNT
+    try:
+        config.CUDA_UNROLL_MAX_TRIP_COUNT = 1000
+        count, _ = _annotated_latches(_trip_count_kernel(1000))
+        assert count == 1
+        config.CUDA_UNROLL_MAX_TRIP_COUNT = 0
+        count, _ = _annotated_latches(_trip_count_kernel(4))
+        assert count == 0
+    finally:
+        config.CUDA_UNROLL_MAX_TRIP_COUNT = saved
 
 
 def test_empty_and_negative_step_ranges_still_run():

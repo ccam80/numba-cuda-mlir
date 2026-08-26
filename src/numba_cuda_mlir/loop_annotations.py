@@ -104,7 +104,7 @@ def _dominators(blocks: list[ir.Block]) -> dict[ir.Block, set[ir.Block]]:
     return dom
 
 
-def _annotate_function(func_op) -> int:
+def _annotate_function(func_op, max_trip_count: int) -> int:
     all_blocks = list(func_op.regions[0].blocks)
     if not all_blocks:
         return 0
@@ -115,8 +115,13 @@ def _annotate_function(func_op) -> int:
         term = _terminator(block)
         if term is None or term.name != "llvm.cond_br":
             continue
-        if _find_static_range_tag(term.location) is not None:
-            headers.append((block, term))
+        trip_count = _find_static_range_tag(term.location)
+        if trip_count is None:
+            continue
+        if trip_count > max_trip_count:
+            term.location = _strip_static_range_tag(term.location)
+            continue
+        headers.append((block, term))
     if not headers:
         return 0
 
@@ -143,8 +148,11 @@ def _annotate_function(func_op) -> int:
 
 
 def annotate_static_range_loops(module: ir.Module) -> int:
-    """Annotate every tagged static-trip loop's latches; returns the loop count."""
+    """Annotate tagged loops up to config.CUDA_UNROLL_MAX_TRIP_COUNT trips; returns the count."""
+    from numba_cuda_mlir.numba_cuda import config
+
+    max_trip_count = int(config.CUDA_UNROLL_MAX_TRIP_COUNT)
     count = 0
     for func_op in find_ops(module, lambda o: o.name == "llvm.func"):
-        count += _annotate_function(func_op)
+        count += _annotate_function(func_op, max_trip_count)
     return count

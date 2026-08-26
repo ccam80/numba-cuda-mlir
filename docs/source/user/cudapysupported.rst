@@ -62,7 +62,8 @@ constraints:
 (literals, or expressions of literals and frozen globals such as
 ``range(STAGES - 1)``) carry a full-unroll hint, equivalent to
 ``#pragma unroll`` in CUDA C++, and are unrolled up to the same code-size cap.
-Loops whose bounds depend on runtime values carry no hint.
+Loops with more than :envvar:`NUMBA_CUDA_UNROLL_MAX_TRIP_COUNT` iterations
+(default 256) or with runtime bounds carry no hint.
 
 
 Printing of strings, integers, and floats is supported, but printing is an

@@ -29,6 +29,11 @@ target.
    heuristic needs to check the number of SMs available on the device in the
    current context.
 
+.. envvar:: NUMBA_CUDA_UNROLL_MAX_TRIP_COUNT
+
+   Largest compile-time trip count of a ``range`` loop that receives a
+   full-unroll hint (default 256). Set to 0 to emit no hints.
+
 .. envvar:: NUMBA_CUDA_WARN_ON_IMPLICIT_COPY
 
    Enable warnings if a kernel is launched with host memory which forces a copy to and

@@ -247,6 +247,9 @@ class _EnvReloader:
         # Whether to use the official CUDA Python API Bindings
         CUDA_USE_NVIDIA_BINDING = _readenv("NUMBA_CUDA_USE_NVIDIA_BINDING", int, 0)
 
+        # Largest constant range() trip count that gets a full-unroll hint; 0 disables
+        CUDA_UNROLL_MAX_TRIP_COUNT = _readenv("NUMBA_CUDA_UNROLL_MAX_TRIP_COUNT", int, 256)
+
         # Debug flag to control compiler debug print
         DEBUG = _readenv("NUMBA_DEBUG", int, 0)
 
