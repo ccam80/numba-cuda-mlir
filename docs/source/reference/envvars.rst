@@ -31,8 +31,7 @@ target.
 
 .. envvar:: NUMBA_CUDA_UNROLL_MAX_TRIP_COUNT
 
-   Largest compile-time trip count of a ``range`` loop that receives a
-   full-unroll hint (default 256). Set to 0 to emit no hints.
+   Largest constant ``range`` trip count given a full-unroll hint (default 256; 0 disables).
 
 .. envvar:: NUMBA_CUDA_WARN_ON_IMPLICIT_COPY
 

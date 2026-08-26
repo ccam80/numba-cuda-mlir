@@ -58,12 +58,7 @@ constraints:
   of the ``assert`` keyword in CUDA C/C++, which is ignored unless compiling
   with device debug turned on.
 
-``for`` loops over :class:`range` whose bounds are compile-time constants
-(literals, or expressions of literals and frozen globals such as
-``range(STAGES - 1)``) carry a full-unroll hint, equivalent to
-``#pragma unroll`` in CUDA C++, and are unrolled up to the same code-size cap.
-Loops with more than :envvar:`NUMBA_CUDA_UNROLL_MAX_TRIP_COUNT` iterations
-(default 256) or with runtime bounds carry no hint.
+``for`` loops over :class:`range` with constant bounds of at most :envvar:`NUMBA_CUDA_UNROLL_MAX_TRIP_COUNT` iterations are compiled as if under ``#pragma unroll``.
 
 
 Printing of strings, integers, and floats is supported, but printing is an
