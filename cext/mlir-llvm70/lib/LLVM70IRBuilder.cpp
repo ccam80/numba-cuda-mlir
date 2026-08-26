@@ -645,11 +645,7 @@ void LLVM70IRBuilder::addNamedMetadataOperand(const char *name,
 }
 LLVMValueRef LLVM70IRBuilder::selfReferentialMDNode(LLVMValueRef *vals,
                                                    unsigned count) {
-  // LLVM's idiom for a loop ID: build the node with a placeholder first
-  // operand, then replace the placeholder with the node itself. Replacing an
-  // operand of a uniqued node with the node drops uniquing, so the result is
-  // the `distinct !{!N, ...}` form the loop passes require.
-  // LLVMMetadataReplaceAllUsesWith deletes the temporary node itself.
+  // Placeholder operand 0, replaced by the node itself; RAUW frees the placeholder.
   LLVMMetadataRef placeholder = fnTemporaryMDNode(ctx, nullptr, 0);
   llvm::SmallVector<LLVMValueRef> operands;
   operands.push_back(fnMetadataAsValue(ctx, placeholder));

@@ -1,13 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""``range`` loops with compile-time trip counts carry full-unroll metadata.
-
-Regression tests for #8: a shared-memory (or global-memory) read operand used
-inside a constant-trip loop nest kept the nest rolled and demoted a local
-array to a local-memory depot, while the same nest with a local-array operand
-fully unrolled. The unroll hint on the latch makes the backend's decision
-independent of the operand's memory space.
-"""
+"""``range`` loops with compile-time trip counts carry full-unroll metadata."""
 
 import re
 
@@ -105,8 +98,7 @@ def test_nested_constant_loops_are_each_annotated():
 
 
 def test_constant_loop_with_break_and_continue():
-    """Early exits add extra latches/exits; the loop is still annotated and
-    still runs correctly."""
+    """Loops with extra exits and latches are still annotated and correct."""
 
     @cuda.jit
     def kernel(out):
@@ -143,8 +135,7 @@ def test_empty_and_negative_step_ranges_still_run():
 
 
 def _make_issue8_kernel(rhs_in_shared, **jit_kwargs):
-    """The reproducer from #8: an ERK-style accumulate nest whose read
-    operand is either a local array or a slice of dynamic shared memory."""
+    """ERK-style accumulate nest reading a local array or a dynamic-shared slice."""
     coeffs = tuple(
         tuple(np.float32(0.1 * (i + 1) + 0.01 * j) for j in range(STAGES)) for i in range(STAGES)
     )
@@ -210,11 +201,7 @@ def _run_issue8(kernel, steps):
 
 
 def test_shared_operand_unrolls_like_local_operand():
-    """#8: the same code shape for a shared-memory and a local-array operand.
-
-    Every constant-trip loop of the nest unrolls, so the only loop left in the
-    PTX is the runtime ``steps`` loop and ``acc`` lives in registers (no local
-    depot) for both variants."""
+    """Shared and local operands give the same PTX shape: no local depot, one loop."""
     local = _make_issue8_kernel(False, fastmath=True)
     shared = _make_issue8_kernel(True, fastmath=True)
     _run_issue8(local, 1)

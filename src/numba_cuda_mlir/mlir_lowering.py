@@ -232,8 +232,7 @@ class MLIRLower(object):
         self._shared_memory_base: ir.Value | None = None
         self._total_shared_memory_bytes: ir.Value | None = None
         self._dynamic_shared_memory_values: list[ir.Value] = []
-        # Numba block offset of each ``for ... in range(...)`` loop header
-        # whose trip count is a compile-time constant -> that trip count.
+        # Loop-header block offset -> compile-time trip count of its range.
         self._static_range_loop_headers: dict[int, int] = {}
         self._deferred_dbg_declare_vars: set[str] = set()
         self._debug_forced_alloca: set[str] = set()
@@ -2939,12 +2938,7 @@ extern "C" __global__ void
         loc = None
         trip_count = self._static_range_loop_headers.get(self.current_offset)
         if trip_count is not None:
-            # Tag the loop header's exit branch through its location: locations
-            # survive dialect conversion and CFG canonicalization, whereas
-            # discardable attributes on cf branches are dropped when
-            # pass-through blocks are folded. After the base pipeline,
-            # loop_annotations.annotate_static_range_loops turns the tag into
-            # unroll metadata on the loop's latches.
+            # Tag the header branch via its location; loop_annotations reads it later.
             loc = static_range_loop_location(trip_count)
 
         cf.cond_br(

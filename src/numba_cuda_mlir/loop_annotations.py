@@ -1,28 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Unroll hints for ``range`` loops with compile-time trip counts.
+"""Full-unroll metadata for ``range`` loops with compile-time trip counts.
 
-Numba lowers ``for i in range(...)`` into an unstructured CFG around an
-in-memory range iterator, so by the time LLVM sees the loop there is no
-``scf.for`` left to unroll on the MLIR side; the backend (libnvvm / nvJitLink)
-makes the unroll decision from its own cost model. That cost model counts the
-loop body *before* memory operations are scalarized, which means a body that
-reads a shared- or global-memory operand looks larger than the same body
-reading a local array (whose accesses SROA turns into registers early), and a
-loop that fully unrolls with a local operand stays rolled with a shared one
-(#8). Attaching ``llvm.loop.unroll.full`` to loops whose trip count is a
-compile-time constant makes the decision independent of that estimate: LLVM
-honours the hint the way it honours ``#pragma unroll`` in CUDA C++, subject
-only to its pragma size cap.
-
-The lowering tags the header branch of each such loop through its *location*
-(``STATIC_RANGE_LOOP_LOC_PREFIX``), because locations survive dialect
-conversion and the CFG canonicalizations that fold pass-through latch blocks,
-whereas attributes on ``cf`` branches do not. After the base pass pipeline
-:func:`annotate_static_range_loops` recovers the loops from the tagged
-headers, puts ``#llvm.loop_annotation<unroll = <full = true>>`` on the
-terminator of every latch (LLVM reads loop metadata from the latch
-terminators), and strips the tags.
+Lowering tags each such loop's header branch through a NameLoc; after the base
+pipeline :func:`annotate_static_range_loops` moves the hint onto the loop's
+latch terminators as ``#llvm.loop_annotation<unroll = <full = true>>``.
 """
 
 from numba_cuda_mlir._mlir import ir
@@ -34,8 +16,7 @@ _LATCH_TERMINATORS = frozenset({"llvm.br", "llvm.cond_br"})
 
 
 def static_range_loop_location(trip_count: int) -> ir.Location:
-    """Location tagging the header branch of a ``range`` loop with a
-    compile-time trip count, nested inside the current location."""
+    """Header-branch tag for a static-trip ``range`` loop, wrapping the current location."""
     name = f"{STATIC_RANGE_LOOP_LOC_PREFIX}{trip_count}"
     child = ir.Location.current
     if child is None:
@@ -96,8 +77,7 @@ def _reachable_blocks(entry: ir.Block) -> list[ir.Block]:
 
 
 def _dominators(blocks: list[ir.Block]) -> dict[ir.Block, set[ir.Block]]:
-    """Dominator sets over ``blocks`` (all reachable from ``blocks[0]``),
-    by iterative data-flow."""
+    """Dominator sets over ``blocks`` (reachable, entry first) by iterative data-flow."""
     entry = blocks[0]
     preds: dict[ir.Block, list[ir.Block]] = {b: [] for b in blocks}
     for block in blocks:
@@ -145,8 +125,7 @@ def _annotate_function(func_op) -> int:
 
     annotated = 0
     for header, header_term in headers:
-        # A latch is a predecessor of the header that the header dominates,
-        # i.e. the source of a back edge.
+        # Latches: predecessors of the header that the header dominates.
         latch_terms = []
         for block in blocks:
             term = _terminator(block)
@@ -154,9 +133,7 @@ def _annotate_function(func_op) -> int:
                 continue
             if any(succ == header for succ in term.successors):
                 latch_terms.append(term)
-        # LLVM reads loop metadata from every latch terminator and requires
-        # them to agree; the LLVM dialect models it only on br/cond_br, so a
-        # loop with any other latch terminator is left alone.
+        # Every latch must take the annotation; only br/cond_br can carry it.
         if latch_terms and all(t.name in _LATCH_TERMINATORS for t in latch_terms):
             for term in latch_terms:
                 term.attributes["loop_annotation"] = unroll_full
@@ -166,9 +143,7 @@ def _annotate_function(func_op) -> int:
 
 
 def annotate_static_range_loops(module: ir.Module) -> int:
-    """Attach full-unroll loop metadata to every tagged static-trip ``range``
-    loop in ``module`` and strip the header tags. Returns the number of loops
-    annotated."""
+    """Annotate every tagged static-trip loop's latches; returns the loop count."""
     count = 0
     for func_op in find_ops(module, lambda o: o.name == "llvm.func"):
         count += _annotate_function(func_op)

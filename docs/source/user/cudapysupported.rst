@@ -60,16 +60,9 @@ constraints:
 
 ``for`` loops over :class:`range` whose bounds are compile-time constants
 (literals, or expressions of literals and frozen globals such as
-``range(STAGES - 1)``) are emitted with a full-unroll hint, equivalent to
-``#pragma unroll`` in CUDA C++. The backend then unrolls such a loop
-regardless of how large its body looks to its cost model, subject only to the
-same code-size cap that applies to ``#pragma unroll``. This keeps the code
-shape identical whether the loop reads a local array or a slice of shared or
-global memory: without the hint, loads from non-local memory inside the loop
-cannot be scalarized before the unroll decision and can tip a nest that
-unrolls with a local-array operand over the backend's size threshold, leaving
-it rolled and demoting register arrays to local memory. Loops whose bounds
-depend on runtime values are unchanged.
+``range(STAGES - 1)``) carry a full-unroll hint, equivalent to
+``#pragma unroll`` in CUDA C++, and are unrolled up to the same code-size cap.
+Loops whose bounds depend on runtime values carry no hint.
 
 
 Printing of strings, integers, and floats is supported, but printing is an

@@ -87,9 +87,7 @@ private:
       llvm::SmallVector<std::pair<LLVMBasicBlockRef, mlir::OperandRange>>;
   llvm::DenseMap<mlir::Block *, ForwarderList> switchForwarders;
 
-  // Loop annotation -> `!llvm.loop` ID node. Keyed by the (uniqued) attribute
-  // so every latch of a loop, and every loop carrying the same annotation,
-  // shares one node; LLVM requires a loop's latches to agree on their ID.
+  // Loop annotation -> shared `!llvm.loop` ID node.
   llvm::DenseMap<mlir::Attribute, LLVMValueRef> loopMetadataCache;
   llvm::Expected<LLVMValueRef>
   getOrCreateLoopMetadata(mlir::LLVM::LoopAnnotationAttr attr);

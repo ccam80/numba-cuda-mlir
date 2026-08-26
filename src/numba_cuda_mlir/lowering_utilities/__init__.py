@@ -1223,15 +1223,7 @@ def _wrap_signed(value: int, width: int) -> int:
 
 
 def try_fold_int_constant(value: ir.Value | int | None) -> int | None:
-    """Fold an integer MLIR value that is a constant, or integer arithmetic on
-    constants, to a Python ``int`` (signed interpretation of its type width).
-
-    Returns ``None`` when the value depends on runtime data or on an operation
-    the folder does not model. Frozen globals and closure constants reach the
-    lowering as ``arith.constant`` ops, so an expression such as
-    ``range(STAGES - 1)`` folds here even though Numba types it as a plain
-    (non-literal) integer.
-    """
+    """Fold a constant or constant-only integer expression to a signed int; None if runtime."""
     if isinstance(value, (bool, np.bool_)):
         return int(value)
     if isinstance(value, (int, np.integer)):
@@ -1306,8 +1298,7 @@ def try_fold_int_constant(value: ir.Value | int | None) -> int | None:
 
 
 def static_range_trip_count(start: ir.Value, stop: ir.Value, step: ir.Value) -> int | None:
-    """Return ``len(range(start, stop, step))`` when all three bounds fold to
-    compile-time integer constants, else ``None``."""
+    """``len(range(start, stop, step))`` if all bounds are constants, else None."""
     start_c = try_fold_int_constant(start)
     stop_c = try_fold_int_constant(stop)
     step_c = try_fold_int_constant(step)
@@ -1337,11 +1328,7 @@ class RangeObject:
 
     def __init__(self, lower, start: ir.Value, stop: ir.Value, step: ir.Value):
         element_type = self._unify_integer_types(start, stop, step)
-        # Compile-time trip count (None when any bound is a runtime value).
-        # Loops over such ranges get an unroll hint on their latch so the
-        # backend's unroll decision does not depend on the loop body's cost
-        # model, which differs by operand memory space (shared/global loads
-        # cannot be scalarized before that decision, local arrays can).
+        # Compile-time trip count, None when any bound is a runtime value.
         self.trip_count = static_range_trip_count(start, stop, step)
 
         with lower.alloca_insertion_point():

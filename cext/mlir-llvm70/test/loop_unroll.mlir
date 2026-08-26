@@ -3,9 +3,7 @@
 // RUN: llvm70-translate %s --dump-llvm 2>&1 >/dev/null | FileCheck --check-prefix=CHECK-IR %s
 // RUN: llvm70-translate %s --dump-ptx 2>&1 >/dev/null | FileCheck --check-prefix=CHECK-PTX %s
 
-// Loop annotations on latch branches become `!llvm.loop` metadata: a distinct
-// self-referential ID node listing the unroll properties. Both latches of
-// @two_latches carry the same annotation and must share one node.
+// Latch loop_annotation -> `!llvm.loop` ID node; same annotation, same node.
 
 module {
   gpu.module @kernels [#nvvm_llvm70.target<chip = "sm_75">] {

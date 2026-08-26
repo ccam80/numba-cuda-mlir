@@ -617,8 +617,7 @@ def optimize(cres):
         )
         pm.run(module.operation)
 
-        # Turn the static-trip range-loop header tags left by lowering into
-        # llvm.loop unroll metadata on the loops' latches (see loop_annotations).
+        # Static-trip range loops: header tags -> unroll metadata on latches.
         loops_annotated = annotate_static_range_loops(module)
         trace("Static-trip range loops annotated for full unroll: %d", loops_annotated)
 

@@ -737,9 +737,7 @@ MLIRToLLVM70::getOrCreateLoopMetadata(LLVM::LoopAnnotationAttr attr) {
                                    os.str().c_str());
   };
 
-  // Everything outside the unroll family is refused rather than silently
-  // dropped: nothing in the compiler produces it, and a dropped hint would be
-  // invisible at the PTX level.
+  // Only the unroll family is translated; anything else is an error.
   if (attr.getDisableNonforced() || attr.getVectorize() ||
       attr.getInterleave() || attr.getUnrollAndJam() || attr.getLicm() ||
       attr.getDistribute() || attr.getPipeline() || attr.getPeeled() ||
@@ -817,8 +815,7 @@ llvm::Error MLIRToLLVM70::translateCondBrOp(Operation *op) {
     auto mkTramp = [&](OperandRange ops) {
       LLVMBasicBlockRef t = b.appendBB(fn, "");
       b.positionAtEnd(t);
-      // The trampolines carry the edges, so LLVM's loop analysis sees them
-      // as the latches: the loop metadata belongs on their branches.
+      // The trampolines are the latches, so they carry the loop metadata.
       LLVMValueRef br = b.buildBr(destBB);
       if (!trampErr)
         trampErr = attachLoopMetadata(br, loopAttr);
