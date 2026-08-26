@@ -205,6 +205,12 @@ public:
   LLVMValueRef mdString(const char *str, unsigned len);
   LLVMValueRef mdNode(LLVMValueRef *vals, unsigned count);
   void addNamedMetadataOperand(const char *name, LLVMValueRef val);
+  /// Build a distinct, self-referential node `!N = distinct !{!N, vals...}`,
+  /// the shape LLVM requires for a loop ID (`!llvm.loop`).
+  LLVMValueRef selfReferentialMDNode(LLVMValueRef *vals, unsigned count);
+  /// Attach `node` to `inst` under the named metadata kind (e.g. "llvm.loop").
+  void setInstructionMetadata(LLVMValueRef inst, const char *kindName,
+                              LLVMValueRef node);
 
   // --- Debug info ---
   void initDebugInfo();
@@ -423,6 +429,14 @@ private:
   LLVM_FN(LLVMValueRef, fnMDNode, LLVMContextRef, LLVMValueRef *, unsigned)
   LLVM_FN(void, fnAddNamedMetadataOperand, LLVMModuleRef, const char *,
            LLVMValueRef)
+  LLVM_FN(unsigned, fnGetMDKindIDInContext, LLVMContextRef, const char *,
+           unsigned)
+  LLVM_FN(void, fnSetMetadata, LLVMValueRef, unsigned, LLVMValueRef)
+  LLVM_FN(LLVMMetadataRef, fnValueAsMetadata, LLVMValueRef)
+  LLVM_FN(LLVMMetadataRef, fnTemporaryMDNode, LLVMContextRef,
+           LLVMMetadataRef *, size_t)
+  LLVM_FN(void, fnMetadataReplaceAllUsesWith, LLVMMetadataRef,
+           LLVMMetadataRef)
 
   // Debug info
   LLVMDIBuilderRef diBuilder = nullptr;

@@ -72,6 +72,7 @@ from numba_cuda_mlir._mlir.dialects import (
 )
 
 from numba_cuda_mlir.logging import trace
+from numba_cuda_mlir.loop_annotations import static_range_loop_location
 from numba_cuda_mlir import mlir_debuginfo
 from numba_cuda_mlir.tools import (
     generate_mangled_name,
@@ -231,6 +232,9 @@ class MLIRLower(object):
         self._shared_memory_base: ir.Value | None = None
         self._total_shared_memory_bytes: ir.Value | None = None
         self._dynamic_shared_memory_values: list[ir.Value] = []
+        # Numba block offset of each ``for ... in range(...)`` loop header
+        # whose trip count is a compile-time constant -> that trip count.
+        self._static_range_loop_headers: dict[int, int] = {}
         self._deferred_dbg_declare_vars: set[str] = set()
         self._debug_forced_alloca: set[str] = set()
         self._poly_dbg_alloca: dict[str, ir.Value] = {}
@@ -1450,6 +1454,8 @@ extern "C" __global__ void
         trace()
         iter_obj = self.load_var(value)
         if isinstance(iter_obj, RangeObject):
+            if iter_obj.trip_count is not None and self.current_offset in self.cfg.loops():
+                self._static_range_loop_headers[self.current_offset] = iter_obj.trip_count
             iternext = iter_obj.next()
             self.store_var(target, iternext)
         elif isinstance(iter_obj, (ArrayIterObject, UniTupleIterObject, NdIterIterObject)):
@@ -2930,12 +2936,24 @@ extern "C" __global__ void
         assert truebr in self.blkmap, f"truebr {truebr} not found in blkmap"
         assert falsebr in self.blkmap, f"falsebr {falsebr} not found in blkmap"
 
+        loc = None
+        trip_count = self._static_range_loop_headers.get(self.current_offset)
+        if trip_count is not None:
+            # Tag the loop header's exit branch through its location: locations
+            # survive dialect conversion and CFG canonicalization, whereas
+            # discardable attributes on cf branches are dropped when
+            # pass-through blocks are folded. After the base pipeline,
+            # loop_annotations.annotate_static_range_loops turns the tag into
+            # unroll metadata on the loop's latches.
+            loc = static_range_loop_location(trip_count)
+
         cf.cond_br(
             condition=self.load_var(cond),
             true_dest_operands=[],
             false_dest_operands=[],
             true_dest=self.blkmap[truebr],
             false_dest=self.blkmap[falsebr],
+            loc=loc,
         )
 
     def lower_jump(self, jump_inst):

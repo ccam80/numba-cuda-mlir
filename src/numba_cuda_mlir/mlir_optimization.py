@@ -14,6 +14,7 @@ from numba_cuda_mlir.lowering_utilities import context
 from numba_cuda_mlir.optimization import run_pre_codegen_patterns
 from numba_cuda_mlir.numba_cuda.cudadrv.nvvm import CompilationUnit
 from numba_cuda_mlir.logging import trace
+from numba_cuda_mlir.loop_annotations import annotate_static_range_loops
 from numba_cuda_mlir.mlir.util import find_ops
 from numba_cuda_mlir.lowering_utilities.llvm_utils import (
     LLVM_C_LIB_PATH,
@@ -615,6 +616,11 @@ def optimize(cres):
             print_after_all=target_options.get("print_after_all", False),
         )
         pm.run(module.operation)
+
+        # Turn the static-trip range-loop header tags left by lowering into
+        # llvm.loop unroll metadata on the loops' latches (see loop_annotations).
+        loops_annotated = annotate_static_range_loops(module)
+        trace("Static-trip range loops annotated for full unroll: %d", loops_annotated)
 
         if target_options.get("debug"):
             _emit_deferred_dbg_declares(module)

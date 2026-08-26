@@ -718,16 +718,89 @@ llvm::Error MLIRToLLVM70::translateReturnOp(Operation *op) {
   return llvm::Error::success();
 }
 
+//===----------------------------------------------------------------------===//
+// Loop metadata (`!llvm.loop` on latch branches)
+//===----------------------------------------------------------------------===//
+
+llvm::Expected<LLVMValueRef>
+MLIRToLLVM70::getOrCreateLoopMetadata(LLVM::LoopAnnotationAttr attr) {
+  auto it = loopMetadataCache.find(attr);
+  if (it != loopMetadataCache.end())
+    return it->second;
+
+  auto unsupported = [&](llvm::StringRef what) {
+    std::string msg;
+    llvm::raw_string_ostream os(msg);
+    os << "llvm70: unsupported loop annotation (" << what
+       << "; only unroll hints are translated): " << attr;
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   os.str().c_str());
+  };
+
+  // Everything outside the unroll family is refused rather than silently
+  // dropped: nothing in the compiler produces it, and a dropped hint would be
+  // invisible at the PTX level.
+  if (attr.getDisableNonforced() || attr.getVectorize() ||
+      attr.getInterleave() || attr.getUnrollAndJam() || attr.getLicm() ||
+      attr.getDistribute() || attr.getPipeline() || attr.getPeeled() ||
+      attr.getUnswitch() || attr.getMustProgress() || attr.getIsVectorized() ||
+      attr.getStartLoc() || attr.getEndLoc() ||
+      !attr.getParallelAccesses().empty())
+    return unsupported("non-unroll parameter");
+
+  llvm::SmallVector<LLVMValueRef> properties;
+  auto addFlag = [&](llvm::StringRef name) {
+    LLVMValueRef str = b.mdString(name.data(), name.size());
+    properties.push_back(b.mdNode(&str, 1));
+  };
+  auto isTrue = [](BoolAttr flag) { return flag && flag.getValue(); };
+
+  if (LLVM::LoopUnrollAttr unroll = attr.getUnroll()) {
+    if (unroll.getFollowupUnrolled() || unroll.getFollowupRemainder() ||
+        unroll.getFollowupAll())
+      return unsupported("unroll followup");
+    if (isTrue(unroll.getDisable()))
+      addFlag("llvm.loop.unroll.disable");
+    if (IntegerAttr count = unroll.getCount()) {
+      LLVMValueRef ops[2] = {
+          b.mdString("llvm.loop.unroll.count", 22),
+          b.constInt(b.i32Ty(), toUInt64(count.getValue()), false)};
+      properties.push_back(b.mdNode(ops, 2));
+    }
+    if (isTrue(unroll.getRuntimeDisable()))
+      addFlag("llvm.loop.unroll.runtime.disable");
+    if (isTrue(unroll.getFull()))
+      addFlag("llvm.loop.unroll.full");
+  }
+
+  LLVMValueRef node =
+      b.selfReferentialMDNode(properties.data(), properties.size());
+  loopMetadataCache[attr] = node;
+  return node;
+}
+
+llvm::Error MLIRToLLVM70::attachLoopMetadata(LLVMValueRef branchInst,
+                                             LLVM::LoopAnnotationAttr attr) {
+  if (!attr)
+    return llvm::Error::success();
+  auto nodeOrErr = getOrCreateLoopMetadata(attr);
+  if (!nodeOrErr)
+    return nodeOrErr.takeError();
+  b.setInstructionMetadata(branchInst, "llvm.loop", *nodeOrErr);
+  return llvm::Error::success();
+}
+
 llvm::Error MLIRToLLVM70::translateBrOp(Operation *op) {
   auto brOp = cast<LLVM::BrOp>(op);
-  b.buildBr(blockMap[brOp.getDest()]);
-  return llvm::Error::success();
+  LLVMValueRef br = b.buildBr(blockMap[brOp.getDest()]);
+  return attachLoopMetadata(br, brOp.getLoopAnnotationAttr());
 }
 
 llvm::Error MLIRToLLVM70::translateCondBrOp(Operation *op) {
   auto condBr = cast<LLVM::CondBrOp>(op);
   Block *trueDest = condBr.getTrueDest();
   Block *falseDest = condBr.getFalseDest();
+  LLVM::LoopAnnotationAttr loopAttr = condBr.getLoopAnnotationAttr();
 
   LLVMBasicBlockRef trueBB = blockMap[trueDest];
   LLVMBasicBlockRef falseBB = blockMap[falseDest];
@@ -740,10 +813,15 @@ llvm::Error MLIRToLLVM70::translateCondBrOp(Operation *op) {
     LLVMBasicBlockRef savedBB = b.getInsertBlock();
 
     LLVMBasicBlockRef destBB = trueBB;
+    llvm::Error trampErr = llvm::Error::success();
     auto mkTramp = [&](OperandRange ops) {
       LLVMBasicBlockRef t = b.appendBB(fn, "");
       b.positionAtEnd(t);
-      b.buildBr(destBB);
+      // The trampolines carry the edges, so LLVM's loop analysis sees them
+      // as the latches: the loop metadata belongs on their branches.
+      LLVMValueRef br = b.buildBr(destBB);
+      if (!trampErr)
+        trampErr = attachLoopMetadata(br, loopAttr);
       switchForwarders[trueDest].push_back({t, ops});
       return t;
     };
@@ -752,10 +830,12 @@ llvm::Error MLIRToLLVM70::translateCondBrOp(Operation *op) {
     falseBB = mkTramp(condBr.getFalseDestOperands());
     b.positionAtEnd(savedBB);
     b.buildCondBr(lookupValue(condBr.getCondition()), trueBB, falseBB);
-  } else {
-    b.buildCondBr(lookupValue(condBr.getCondition()), trueBB, falseBB);
+    return trampErr;
   }
-  return llvm::Error::success();
+
+  LLVMValueRef br =
+      b.buildCondBr(lookupValue(condBr.getCondition()), trueBB, falseBB);
+  return attachLoopMetadata(br, loopAttr);
 }
 
 llvm::Error MLIRToLLVM70::translateSwitchOp(Operation *op) {

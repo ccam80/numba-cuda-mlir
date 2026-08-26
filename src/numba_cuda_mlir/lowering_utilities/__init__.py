@@ -1203,6 +1203,119 @@ class DeferredMethodCall(DeferredLowering):
         return self.lowering_function(builder, target, [self._self] + args, kwargs)
 
 
+def _int_type_width(ty: ir.Type) -> int | None:
+    match ty:
+        case ir.IntegerType():
+            return ty.width
+        case ir.IndexType():
+            return 64
+        case _:
+            return None
+
+
+def _wrap_signed(value: int, width: int) -> int:
+    """Reinterpret ``value`` as a two's-complement signed integer of ``width`` bits."""
+    mask = (1 << width) - 1
+    value &= mask
+    if value >= 1 << (width - 1):
+        value -= 1 << width
+    return value
+
+
+def try_fold_int_constant(value: ir.Value | int | None) -> int | None:
+    """Fold an integer MLIR value that is a constant, or integer arithmetic on
+    constants, to a Python ``int`` (signed interpretation of its type width).
+
+    Returns ``None`` when the value depends on runtime data or on an operation
+    the folder does not model. Frozen globals and closure constants reach the
+    lowering as ``arith.constant`` ops, so an expression such as
+    ``range(STAGES - 1)`` folds here even though Numba types it as a plain
+    (non-literal) integer.
+    """
+    if isinstance(value, (bool, np.bool_)):
+        return int(value)
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if value is None:
+        return None
+    value = ir.Value(value)
+    width = _int_type_width(value.type)
+    if width is None:
+        return None
+    owner = value.owner
+    if isinstance(owner, ir.Block):
+        return None
+    opview = owner.opview if isinstance(owner, ir.Operation) else owner
+
+    def fold_operands():
+        folded = [try_fold_int_constant(operand) for operand in opview.operands]
+        return None if any(v is None for v in folded) else folded
+
+    match opview:
+        case arith.ConstantOp(value=attr):
+            if not isinstance(attr, ir.IntegerAttr):
+                return None
+            return _wrap_signed(int(attr.value), width)
+        case arith.IndexCastOp() | arith.ExtSIOp() | arith.TruncIOp():
+            inner = try_fold_int_constant(opview.operands[0])
+            return None if inner is None else _wrap_signed(inner, width)
+        case arith.IndexCastUIOp() | arith.ExtUIOp():
+            inner = try_fold_int_constant(opview.operands[0])
+            if inner is None:
+                return None
+            src_width = _int_type_width(ir.Value(opview.operands[0]).type)
+            return _wrap_signed(inner & ((1 << src_width) - 1), width)
+        case arith.AddIOp():
+            folded = fold_operands()
+            return None if folded is None else _wrap_signed(folded[0] + folded[1], width)
+        case arith.SubIOp():
+            folded = fold_operands()
+            return None if folded is None else _wrap_signed(folded[0] - folded[1], width)
+        case arith.MulIOp():
+            folded = fold_operands()
+            return None if folded is None else _wrap_signed(folded[0] * folded[1], width)
+        case arith.DivSIOp() | arith.RemSIOp():
+            folded = fold_operands()
+            if folded is None or folded[1] == 0:
+                return None
+            lhs, rhs = folded
+            # arith.divsi truncates toward zero; arith.remsi takes the dividend's sign.
+            quotient = abs(lhs) // abs(rhs)
+            if (lhs < 0) != (rhs < 0):
+                quotient = -quotient
+            result = quotient if isinstance(opview, arith.DivSIOp) else lhs - quotient * rhs
+            return _wrap_signed(result, width)
+        case arith.FloorDivSIOp():
+            folded = fold_operands()
+            if folded is None or folded[1] == 0:
+                return None
+            return _wrap_signed(folded[0] // folded[1], width)
+        case arith.CeilDivSIOp():
+            folded = fold_operands()
+            if folded is None or folded[1] == 0:
+                return None
+            return _wrap_signed(-((-folded[0]) // folded[1]), width)
+        case arith.MaxSIOp():
+            folded = fold_operands()
+            return None if folded is None else max(folded)
+        case arith.MinSIOp():
+            folded = fold_operands()
+            return None if folded is None else min(folded)
+        case _:
+            return None
+
+
+def static_range_trip_count(start: ir.Value, stop: ir.Value, step: ir.Value) -> int | None:
+    """Return ``len(range(start, stop, step))`` when all three bounds fold to
+    compile-time integer constants, else ``None``."""
+    start_c = try_fold_int_constant(start)
+    stop_c = try_fold_int_constant(stop)
+    step_c = try_fold_int_constant(step)
+    if start_c is None or stop_c is None or step_c is None or step_c == 0:
+        return None
+    return len(range(start_c, stop_c, step_c))
+
+
 @dataclass
 class RangeObject:
     """
@@ -1224,6 +1337,12 @@ class RangeObject:
 
     def __init__(self, lower, start: ir.Value, stop: ir.Value, step: ir.Value):
         element_type = self._unify_integer_types(start, stop, step)
+        # Compile-time trip count (None when any bound is a runtime value).
+        # Loops over such ranges get an unroll hint on their latch so the
+        # backend's unroll decision does not depend on the loop body's cost
+        # model, which differs by operand memory space (shared/global loads
+        # cannot be scalarized before that decision, local arrays can).
+        self.trip_count = static_range_trip_count(start, stop, step)
 
         with lower.alloca_insertion_point():
             self._memref = memref.alloca(T.memref(5, element_type), [], [])
