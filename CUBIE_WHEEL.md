@@ -21,7 +21,7 @@ the fork-side runbook.
    |---|---|---|
    | NVIDIA#255 | `selective-fastmath` | MLIRToLLVM70 |
    | NVIDIA#225 | `fix-lineinfo-multi-file-pr` | MLIRToLLVM70 |
-   | NVIDIA#298 | `feat/loop-unroll-hints` | MLIRToLLVM70 (`!llvm.loop` unroll metadata) plus its Python typing and lowering |
+   | NVIDIA#298 | `feat/loop-unroll-hints` | MLIRToLLVM70 + Python typing/lowering |
    | ccam80#6 | `codex/lean-typed-scheduler` | Python typed-planner hook |
 
    Python-side upstream PRs stay **out** of this branch: cubie
