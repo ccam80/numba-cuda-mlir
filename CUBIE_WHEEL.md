@@ -126,8 +126,7 @@ pytest tests/test_kernel_exceptions.py \
        --override-ini="addopts="
 ```
 
-Reference result (0.4.2.1, RTX 4070 SUPER, CUDA 13): cubie suite
-3132 passed / 0 failed; fork tests 181 passed / 2 xfailed.
+Reference result (0.5.1.1, RTX 4070 SUPER, CUDA 13): cubie 3650/0, fork 207/2xf.
 
 ## Publish
 
