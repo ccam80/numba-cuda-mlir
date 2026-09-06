@@ -1180,8 +1180,7 @@ def test_shared_memory_carveout_helper_normalizes_strings():
 
     assert wrapped._codelibrary.cufunc.carveout == 100
 
-    # The native dispatcher receives the preference at construction, so an
-    # unknown string is rejected there.
+    # An unknown string is rejected when the dispatcher is constructed.
     with pytest.raises(KeyError):
         descriptor_mod.MLIRDispatcher(
             kernel, targetoptions={"shared_memory_carveout": "invalid"}

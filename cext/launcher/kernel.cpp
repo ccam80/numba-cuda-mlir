@@ -327,8 +327,7 @@ struct CudaKernelHandle {
     CudaKernel cukernel;
     PyPtr post_load_callback;
     bool cooperative = false;
-    // The dispatcher's preferred shared memory carveout is applied to the
-    // launched CUfunction once, on its first launch.
+    // Set once the carveout preference has been applied to the launched CUfunction.
     bool shared_carveout_applied = false;
 };
 
@@ -1584,11 +1583,7 @@ struct KernelDispatcher {
     // is skipped. Mirrors numba-cuda, which only surfaces kernel exceptions
     // (raise/assert/bounds checks) when the kernel is compiled with debug=True.
     bool debug = false;
-    // Preferred shared memory carveout (CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_
-    // MEMORY_CARVEOUT, -1 = driver default, 0..100 = percent of the unified
-    // pool) applied to every kernel this dispatcher launches. The Python-side
-    // driver handle is a separate CUfunction, so an attribute set there never
-    // reaches the launched kernel.
+    // Preferred shared memory carveout percent (-1 driver default) for launched kernels.
     bool has_shared_carveout = false;
     int shared_carveout = -1;
 };
@@ -2089,8 +2084,7 @@ Status launch(KernelDispatcher& dispatcher, Grid grid, Grid block, std::optional
                         get_cuda_error(func_res));
         }
 
-        // Apply the preferred shared memory carveout to the launched function
-        // the first time this kernel is launched.
+        // Apply the carveout preference on the kernel's first launch.
         if (dispatcher.has_shared_carveout
                 && !kernel_iter->second.shared_carveout_applied) {
             CUresult carveout_res = g_cuFuncSetAttribute(

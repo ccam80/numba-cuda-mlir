@@ -2220,8 +2220,7 @@ class MLIRDispatcher(Dispatcher, serialize.ReduceMixin):
         return rebuilt
 
     def _apply_shared_memory_carveout(self, wrapped):
-        # The driver-side handle serves occupancy queries; the launched
-        # function receives the same preference from the native dispatcher.
+        # Occupancy queries use this handle; the native dispatcher sets the launched one.
         carveout = self._shared_memory_carveout_value()
         if carveout is None:
             return
