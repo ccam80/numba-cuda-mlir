@@ -1180,11 +1180,31 @@ def test_shared_memory_carveout_helper_normalizes_strings():
 
     assert wrapped._codelibrary.cufunc.carveout == 100
 
-    invalid = descriptor_mod.MLIRDispatcher(
-        kernel, targetoptions={"shared_memory_carveout": "invalid"}
-    )
+    # The native dispatcher receives the preference at construction, so an
+    # unknown string is rejected there.
     with pytest.raises(KeyError):
-        invalid._apply_shared_memory_carveout(wrapped)
+        descriptor_mod.MLIRDispatcher(
+            kernel, targetoptions={"shared_memory_carveout": "invalid"}
+        )
+
+
+def test_kernel_dispatcher_receives_shared_memory_carveout(monkeypatch):
+    received = []
+
+    class KernelDispatcher:
+        def __init__(self, *args, **kwargs):
+            received.append(kwargs.get("shared_memory_carveout"))
+
+    monkeypatch.setattr(descriptor_mod._cext, "KernelDispatcher", KernelDispatcher)
+
+    def kernel(out):
+        pass
+
+    for option, expected in (("maxl1", 0), ("maxshared", 100), (37, 37), (None, None)):
+        targetoptions = {} if option is None else {"shared_memory_carveout": option}
+        dispatcher = descriptor_mod.MLIRDispatcher(kernel, targetoptions=targetoptions)
+        dispatcher._new_kernel_dispatcher()
+        assert received[-1] == expected
 
 
 def test_compile_impl_generic_applies_shared_memory_carveout(monkeypatch):
@@ -2420,6 +2440,7 @@ def test_literal_retry_rebuild_preserves_debug_lock_and_serialized_state(monkeyp
         context_callback,
         debug=False,
         literal_arg_flags=(),
+        shared_memory_carveout=None,
     ):
         native = object()
         native_calls.append((native, tuple(constant_flags), tuple(literal_arg_flags), debug))

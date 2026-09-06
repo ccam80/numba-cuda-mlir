@@ -64,6 +64,7 @@ typedef enum {
     CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES             = 1,
     CU_FUNC_ATTRIBUTE_NUM_REGS                      = 4,
     CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES = 8,
+    CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT = 9,
 } CUfunction_attribute;
 
 /* ---- cuGetProcAddress -------------------------------------------------- */

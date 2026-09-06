@@ -327,6 +327,9 @@ struct CudaKernelHandle {
     CudaKernel cukernel;
     PyPtr post_load_callback;
     bool cooperative = false;
+    // The dispatcher's preferred shared memory carveout is applied to the
+    // launched CUfunction once, on its first launch.
+    bool shared_carveout_applied = false;
 };
 
 // This should compile to a no-op
@@ -1581,6 +1584,13 @@ struct KernelDispatcher {
     // is skipped. Mirrors numba-cuda, which only surfaces kernel exceptions
     // (raise/assert/bounds checks) when the kernel is compiled with debug=True.
     bool debug = false;
+    // Preferred shared memory carveout (CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_
+    // MEMORY_CARVEOUT, -1 = driver default, 0..100 = percent of the unified
+    // pool) applied to every kernel this dispatcher launches. The Python-side
+    // driver handle is a separate CUfunction, so an attribute set there never
+    // reaches the launched kernel.
+    bool has_shared_carveout = false;
+    int shared_carveout = -1;
 };
 
 void get_pyarg_types(PyObject* const* pyargs, Py_ssize_t num_pyargs,
@@ -2079,6 +2089,23 @@ Status launch(KernelDispatcher& dispatcher, Grid grid, Grid block, std::optional
                         get_cuda_error(func_res));
         }
 
+        // Apply the preferred shared memory carveout to the launched function
+        // the first time this kernel is launched.
+        if (dispatcher.has_shared_carveout
+                && !kernel_iter->second.shared_carveout_applied) {
+            CUresult carveout_res = g_cuFuncSetAttribute(
+                cu_function,
+                CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT,
+                dispatcher.shared_carveout
+            );
+            if (carveout_res != CUDA_SUCCESS) {
+                return raise(PyExc_RuntimeError,
+                            "Failed to set preferred shared memory carveout to %d: %s",
+                            dispatcher.shared_carveout, get_cuda_error(carveout_res));
+            }
+            kernel_iter->second.shared_carveout_applied = true;
+        }
+
         // The function's default dynamic limit is the device's standard
         // per-block limit minus the kernel's static shared memory
         // (CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK -
@@ -2274,16 +2301,38 @@ Result<std::vector<bool>> parse_constant_arg_flags(PyObject* tuple) {
 }
 
 int KernelDispatcher_init(PyObject* self, PyObject* args, PyObject* kwargs) {
-    const char* keywords[] = {"", "", "", "debug", "literal_arg_flags", nullptr};
+    const char* keywords[] = {"", "", "", "debug", "literal_arg_flags",
+                              "shared_memory_carveout", nullptr};
     PyObject* compile_func = nullptr;
     PyObject* py_constant_arg_flags = nullptr;
     PyObject* ensure_context_func = Py_None;
     PyObject* py_literal_arg_flags = Py_None;
+    PyObject* py_shared_carveout = Py_None;
     int debug = 0;
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OO|OpO", const_cast<char**>(keywords),
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OO|OpOO", const_cast<char**>(keywords),
                                      &compile_func, &py_constant_arg_flags,
-                                     &ensure_context_func, &debug, &py_literal_arg_flags))
+                                     &ensure_context_func, &debug, &py_literal_arg_flags,
+                                     &py_shared_carveout))
         return -1;
+
+    bool has_shared_carveout = false;
+    int shared_carveout = -1;
+    if (py_shared_carveout != Py_None) {
+        if (!PyLong_Check(py_shared_carveout)) {
+            PyErr_SetString(PyExc_TypeError,
+                            "shared_memory_carveout must be an integer or None");
+            return -1;
+        }
+        shared_carveout = pylong_as<int>(py_shared_carveout);
+        if (PyErr_Occurred()) return -1;
+        if (shared_carveout < -1 || shared_carveout > 100) {
+            PyErr_Format(PyExc_ValueError,
+                         "shared_memory_carveout must be between -1 and 100, got %d",
+                         shared_carveout);
+            return -1;
+        }
+        has_shared_carveout = true;
+    }
 
     Result<std::vector<bool>> constant_arg_flags = parse_constant_arg_flags(py_constant_arg_flags);
     if (!constant_arg_flags.is_ok()) return -1;
@@ -2306,6 +2355,8 @@ int KernelDispatcher_init(PyObject* self, PyObject* args, PyObject* kwargs) {
     dispatcher.constant_arg_flags = std::move(*constant_arg_flags);
     dispatcher.literal_arg_flags = std::move(literal_arg_flags);
     dispatcher.debug = (debug != 0);
+    dispatcher.has_shared_carveout = has_shared_carveout;
+    dispatcher.shared_carveout = shared_carveout;
     return 0;
 }
 

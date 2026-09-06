@@ -1666,7 +1666,18 @@ class MLIRDispatcher(Dispatcher, serialize.ReduceMixin):
             _ensure_numba_cuda_context,
             debug=bool(self.targetoptions.get("debug", False)),
             literal_arg_flags=tuple(literal_args),
+            shared_memory_carveout=self._shared_memory_carveout_value(),
         )
+
+    def _shared_memory_carveout_value(self):
+        """The ``shared_memory_carveout`` target option as a driver integer."""
+        carveout = self.targetoptions.get("shared_memory_carveout")
+        if carveout is None:
+            return None
+        if isinstance(carveout, str):
+            carveout_map = {"default": -1, "maxl1": 0, "maxshared": 100}
+            carveout = carveout_map[carveout.lower()]
+        return int(carveout)
 
     @property
     def _launch_config_enabled(self):
@@ -2209,12 +2220,11 @@ class MLIRDispatcher(Dispatcher, serialize.ReduceMixin):
         return rebuilt
 
     def _apply_shared_memory_carveout(self, wrapped):
-        carveout = self.targetoptions.get("shared_memory_carveout")
+        # The driver-side handle serves occupancy queries; the launched
+        # function receives the same preference from the native dispatcher.
+        carveout = self._shared_memory_carveout_value()
         if carveout is None:
             return
-        if isinstance(carveout, str):
-            carveout_map = {"default": -1, "maxl1": 0, "maxshared": 100}
-            carveout = carveout_map[carveout.lower()]
         wrapped._codelibrary.get_cufunc().set_shared_memory_carveout(carveout)
 
     def __getitem__(self, args):
