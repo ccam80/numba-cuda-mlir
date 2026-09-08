@@ -1,29 +1,10 @@
-"""Prepare a fresh git worktree of numba-cuda-mlir for agent work.
+"""Stage a worktree's build products and a venv that imports it.
 
-Orca runs this from the new worktree after ``worktree create`` (see
-``orca.yaml``); it also runs by hand from any worktree::
-
-    python toolshed/worktree_setup.py
-
-The package needs untracked build products next to its sources: the
-``_mlir`` bindings tree and the compiled extension modules. Both are
-copied from the main checkout's ``src/numba_cuda_mlir`` (no junctions,
-so a bridge rebuilt for one branch never leaks into another).
-
-The main checkout's ``.venv`` holds the dependencies and an editable
-install that resolves to the main checkout. Rather than rebuild that
-environment, each worktree gets a thin venv on the same base
-interpreter whose ``.pth`` puts ``<worktree>/src`` ahead of the main
-venv's site-packages, so ``import numba_cuda_mlir`` resolves inside the
-worktree with no ``PYTHONPATH`` discipline. A ``sitecustomize`` in that
-venv exports ``LIBLLVM7`` from the main checkout's ``llvm7-install``.
-
-Environment:
-
-``ORCA_WORKTREE_PATH``
-    The worktree to prepare (default: this file's repo root).
-``ORCA_ROOT_PATH``
-    The main checkout (default: the owner of the shared ``.git``).
+Copies ``_mlir`` and the extension modules from the main checkout, then
+builds a ``.venv`` whose ``.pth`` lists ``<worktree>/src`` before the
+main venv's site-packages and whose ``sitecustomize`` sets ``LIBLLVM7``.
+Env: ``ORCA_WORKTREE_PATH`` (default: this repo root),
+``ORCA_ROOT_PATH`` (default: the main checkout).
 """
 
 import configparser
@@ -151,7 +132,7 @@ def build_layered_venv(root, worktree, interpreter):
 
 
 def copy_local_files(root, worktree):
-    """Gitignored machine-specific files travel with the worktree."""
+    """Copy the gitignored machine-specific files into the worktree."""
     for relative in LOCAL_FILES:
         source = root / relative
         target = worktree / relative
