@@ -1,11 +1,10 @@
 """Stage a worktree's build products and a venv that imports it.
 
-Copies ``_mlir`` and the extension modules from the main checkout, then
-builds a ``.venv`` whose ``.pth`` lists ``<worktree>/src`` before the
-main venv's site-packages and whose ``sitecustomize`` sets ``LIBLLVM7``.
-An existing ``.venv`` built on a different interpreter is rebuilt.
-Env: ``ORCA_WORKTREE_PATH`` (default: this repo root),
-``ORCA_ROOT_PATH`` (default: the main checkout).
+Copies ``_mlir`` and the extension modules from the main checkout; the
+``.venv`` ``.pth`` lists ``<worktree>/src`` before the main venv's
+site-packages and ``sitecustomize`` sets ``LIBLLVM7``. A ``.venv`` on
+another interpreter is rebuilt. Env: ``ORCA_WORKTREE_PATH``,
+``ORCA_ROOT_PATH``.
 """
 
 import configparser
