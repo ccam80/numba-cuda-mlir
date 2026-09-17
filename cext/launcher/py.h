@@ -75,10 +75,7 @@ void pywrapper_dealloc(PyObject* self) {
     Py_TYPE(self)->tp_free(self);
 }
 
-// tp_traverse for wrapped types that report the Python references they own
-// through `int traverse(visitproc, void*) const`. Wrapper types that hold
-// Python objects must set Py_TPFLAGS_HAVE_GC and this slot, or a reference
-// cycle passing through them is invisible to the collector and never freed.
+// tp_traverse for wrappers whose T defines traverse(visitproc, void*).
 template <typename T>
 int pywrapper_traverse(PyObject* self, visitproc visit, void* arg) {
     return py_unwrap<T>(self).traverse(visit, arg);

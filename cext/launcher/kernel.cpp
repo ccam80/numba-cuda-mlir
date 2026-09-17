@@ -1582,11 +1582,7 @@ struct KernelDispatcher {
     // (raise/assert/bounds checks) when the kernel is compiled with debug=True.
     bool debug = false;
 
-    // compile_func is a bound method of the MLIRDispatcher that owns this
-    // object, so the two form a cycle the collector can only break if the
-    // edge is reported here. Compiled kernels hold no Python references
-    // (post_load_callback is consumed at load time) and the argument
-    // profile keys are type objects, which never point back at a dispatcher.
+    // Report the owned Python references to the cycle collector.
     int traverse(visitproc visit, void* arg) const {
         Py_VISIT(compile_func.get());
         Py_VISIT(ensure_context_func.get());

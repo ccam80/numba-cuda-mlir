@@ -1648,12 +1648,7 @@ class MLIRDispatcher(Dispatcher, serialize.ReduceMixin):
         return MLIRDispatcherType(self)
 
     def _make_finalizer(self):
-        """Release the target-context entries this dispatcher's overloads registered.
-
-        Only compile results that carry an ``entry_point`` were registered
-        with the target context; disk-cached results and launch-only results
-        have nothing to remove.
-        """
+        """Unregister overloads that registered an entry point with the target context."""
         overloads = self.overloads
         targetctx = self.targetctx
 
