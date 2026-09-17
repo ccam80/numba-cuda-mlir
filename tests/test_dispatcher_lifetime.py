@@ -45,10 +45,7 @@ def test_dropped_kernel_is_collected_after_launch():
 
 
 def test_dropped_kernel_dispatcher_teardown_after_launch(monkeypatch):
-    # With no retention, recompile() frees the old native dispatcher at once,
-    # after it has compiled and launched a kernel. Both its kernel-family map
-    # and its argument profile own that family, so the teardown must release
-    # it exactly once.
+    # Zero retention frees the launched native dispatcher on recompile().
     monkeypatch.setattr(descriptor_mod, "_OLD_DISPATCHER_RETAIN_LIMIT", 0)
     kern, _ = _make_kernel()
     a = cuda.to_device(np.zeros(1, dtype=np.int64))
