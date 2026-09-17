@@ -68,9 +68,20 @@ PyObject* pywrapper_new(PyTypeObject* type, PyObject*, PyObject*) {
 
 template <typename T>
 void pywrapper_dealloc(PyObject* self) {
+    if (PyType_IS_GC(Py_TYPE(self)))
+        PyObject_GC_UnTrack(self);
     PythonWrapper<T>* wrapper = reinterpret_cast<PythonWrapper<T>*>(self);
     wrapper->object.~T();
     Py_TYPE(self)->tp_free(self);
+}
+
+// tp_traverse for wrapped types that report the Python references they own
+// through `int traverse(visitproc, void*) const`. Wrapper types that hold
+// Python objects must set Py_TPFLAGS_HAVE_GC and this slot, or a reference
+// cycle passing through them is invisible to the collector and never freed.
+template <typename T>
+int pywrapper_traverse(PyObject* self, visitproc visit, void* arg) {
+    return py_unwrap<T>(self).traverse(visit, arg);
 }
 
 struct OK_t{};

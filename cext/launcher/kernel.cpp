@@ -1581,6 +1581,17 @@ struct KernelDispatcher {
     // is skipped. Mirrors numba-cuda, which only surfaces kernel exceptions
     // (raise/assert/bounds checks) when the kernel is compiled with debug=True.
     bool debug = false;
+
+    // compile_func is a bound method of the MLIRDispatcher that owns this
+    // object, so the two form a cycle the collector can only break if the
+    // edge is reported here. Compiled kernels hold no Python references
+    // (post_load_callback is consumed at load time) and the argument
+    // profile keys are type objects, which never point back at a dispatcher.
+    int traverse(visitproc visit, void* arg) const {
+        Py_VISIT(compile_func.get());
+        Py_VISIT(ensure_context_func.get());
+        return 0;
+    }
 };
 
 void get_pyarg_types(PyObject* const* pyargs, Py_ssize_t num_pyargs,
@@ -2348,6 +2359,11 @@ struct LaunchConfiguration {
     std::optional<Grid> cluster;
     std::optional<CUstream> stream;
     int sharedmem;
+
+    int traverse(visitproc visit, void* arg) const {
+        Py_VISIT(dispatcher.get());
+        return 0;
+    }
 };
 
 PyObject* LaunchConfiguration_vectorcall(PyObject* self, PyObject *const *args,
@@ -2604,7 +2620,8 @@ Status kernel_init(PyObject* m) {
     KernelDispatcher_type.tp_name = "numba_cuda_mlir._cext.KernelDispatcher";
     KernelDispatcher_type.tp_basicsize = sizeof(PythonWrapper<KernelDispatcher>);
     KernelDispatcher_type.tp_dealloc = pywrapper_dealloc<KernelDispatcher>;
-    KernelDispatcher_type.tp_flags = Py_TPFLAGS_DEFAULT;
+    KernelDispatcher_type.tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC;
+    KernelDispatcher_type.tp_traverse = pywrapper_traverse<KernelDispatcher>;
     KernelDispatcher_type.tp_init = KernelDispatcher_init;
     KernelDispatcher_type.tp_new = pywrapper_new<KernelDispatcher>;
 
@@ -2615,7 +2632,9 @@ Status kernel_init(PyObject* m) {
         static_cast<Py_ssize_t>(offsetof(PythonWrapper<LaunchConfiguration>, object)
                                 + offsetof(LaunchConfiguration, vectorcall));
     LaunchConfiguration_type.tp_call = LaunchConfiguration_call;
-    LaunchConfiguration_type.tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_VECTORCALL;
+    LaunchConfiguration_type.tp_flags =
+        Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_VECTORCALL | Py_TPFLAGS_HAVE_GC;
+    LaunchConfiguration_type.tp_traverse = pywrapper_traverse<LaunchConfiguration>;
     LaunchConfiguration_type.tp_init = LaunchConfiguration_init;
     LaunchConfiguration_type.tp_new = pywrapper_new<LaunchConfiguration>;
 
