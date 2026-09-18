@@ -32,7 +32,7 @@ from numba_cuda_mlir.numba_cuda.typing.templates import _select_overload_dispatc
 from numba_cuda_mlir.numba_cuda import types
 from numba_cuda_mlir.numba_cuda.typing.typeof import typeof
 from numba_cuda_mlir.numba_cuda.cudadecl import registry as cuda_registry
-from numba_cuda_mlir.numba_cuda import serialize, typing
+from numba_cuda_mlir.numba_cuda import serialize, typing, utils
 from numba_cuda_mlir.numba_cuda.core.base import BaseContext
 from numba_cuda_mlir.numba_cuda.core.callconv import MinimalCallConv
 from numba_cuda_mlir.numba_cuda.cudadrv.devicearray import DeviceNDArrayBase
@@ -1635,6 +1635,25 @@ class MLIRDispatcher(Dispatcher, serialize.ReduceMixin):
     @property
     def _numba_type_(self):
         return MLIRDispatcherType(self)
+
+    def _make_finalizer(self):
+        """Unregister overloads that registered an entry point with the target context."""
+        overloads = self.overloads
+        targetctx = self.targetctx
+
+        def finalizer(shutting_down=utils.shutting_down):
+            if shutting_down():
+                return
+            for cres in overloads.values():
+                entry_point = getattr(cres, "entry_point", None)
+                if entry_point is None:
+                    continue
+                try:
+                    targetctx.remove_user_function(entry_point)
+                except KeyError:
+                    pass
+
+        return finalizer
 
     def _new_kernel_dispatcher(self):
         # Only debug kernels pay the per-launch device-side error readback
