@@ -127,7 +127,7 @@ pytest tests/test_kernel_exceptions.py \
        --override-ini="addopts="
 ```
 
-Reference result (0.5.1.1, RTX 4070 SUPER, CUDA 13): cubie 3650/0, fork 207/2xf.
+Reference result (0.5.1.2, RTX 4070 SUPER, CUDA 13): cubie 3784/0, fork 188/2xf (plus `tests/test_dispatcher_lifetime.py`).
 
 ## Publish
 
