@@ -83,9 +83,12 @@ def _cast_to_float_of_same_size(value: ir.Value, source_type: types.Type | None 
 
 
 def _ensure_float(value: ir.Value, source_type: types.Type | None = None) -> ir.Value:
-    """Ensure value is floating-point, converting integers to floats if needed."""
+    """Ensure value is floating-point, converting integers to float64."""
     if isinstance(value.type, ir.IntegerType) or isinstance(value.type, ir.IndexType):
-        return _cast_to_float_of_same_size(value, source_type)
+        signed = None
+        if source_type is not None:
+            signed = get_conversion_signedness(source_type, types.float64)
+        return lowering_utilities.convert(value, T.f64(), signed=signed)
     return value
 
 
@@ -581,8 +584,8 @@ def math_ceil_cg(mlir_lower, target, args, kwargs):
     assert not kwargs, "math_ceil_intrinsic does not accept any keyword arguments"
     value = mlir_lower.load_var(args[0])
     if _is_integer_type(value.type):
-        # ceil of an integer is the integer itself, but convert to float for return type
-        result = _cast_to_float_of_same_size(value, mlir_lower.get_numba_type(args[0].name))
+        # ceil of an integer is the integer itself, as float64
+        result = _ensure_float(value, mlir_lower.get_numba_type(args[0].name))
     else:
         result = math_dialect.ceil(value)
     mlir_lower.store_var(target, result)
@@ -593,8 +596,8 @@ def math_floor_cg(mlir_lower, target, args, kwargs):
     assert not kwargs, "math_floor does not accept any keyword arguments"
     value = mlir_lower.load_var(args[0])
     if _is_integer_type(value.type):
-        # floor of an integer is the integer itself, but convert to float for return type
-        result = _cast_to_float_of_same_size(value, mlir_lower.get_numba_type(args[0].name))
+        # floor of an integer is the integer itself, as float64
+        result = _ensure_float(value, mlir_lower.get_numba_type(args[0].name))
     else:
         result = math_dialect.floor(value)
     mlir_lower.store_var(target, result)
@@ -605,8 +608,8 @@ def math_trunc_cg(mlir_lower, target, args, kwargs):
     assert not kwargs, "math_trunc does not accept any keyword arguments"
     value = mlir_lower.load_var(args[0])
     if _is_integer_type(value.type):
-        # trunc of an integer is the integer itself, but convert to float for return type
-        result = _cast_to_float_of_same_size(value, mlir_lower.get_numba_type(args[0].name))
+        # trunc of an integer is the integer itself, as float64
+        result = _ensure_float(value, mlir_lower.get_numba_type(args[0].name))
     else:
         result = math_dialect.trunc(value)
     mlir_lower.store_var(target, result)
