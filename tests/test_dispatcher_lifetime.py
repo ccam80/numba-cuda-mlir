@@ -7,10 +7,8 @@ import weakref
 
 import numpy as np
 
-from numba_cuda_mlir import _cext, cuda
+from numba_cuda_mlir import cuda
 from numba_cuda_mlir import descriptor as descriptor_mod
-
-_Py_TPFLAGS_HAVE_GC = 1 << 14
 
 
 def _make_kernel():
@@ -25,23 +23,22 @@ def _make_kernel():
     return kern, helper
 
 
-def test_native_launch_types_participate_in_gc():
-    assert _cext.KernelDispatcher.__flags__ & _Py_TPFLAGS_HAVE_GC
-    assert _cext.LaunchConfiguration.__flags__ & _Py_TPFLAGS_HAVE_GC
-
-
-def test_dropped_kernel_is_collected_after_launch():
-    kern, helper = _make_kernel()
+def test_dropped_kernels_are_collected_after_launch():
     a = cuda.to_device(np.zeros(1, dtype=np.int64))
-    kern[1, 1](a)
+    refs = []
+    for _ in range(3):
+        kern, helper = _make_kernel()
+        kern[1, 1](a)
+        refs += [weakref.ref(kern), weakref.ref(helper)]
+        del kern, helper
     cuda.synchronize()
-    assert a.copy_to_host()[0] == 1
+    assert a.copy_to_host()[0] == 3
 
-    kern_ref = weakref.ref(kern)
-    del kern, helper
+    # The first collection frees the kernels, the second the device functions they called.
+    gc.collect()
     gc.collect()
 
-    assert kern_ref() is None
+    assert all(ref() is None for ref in refs)
 
 
 def test_dropped_kernel_dispatcher_teardown_after_launch(monkeypatch):
