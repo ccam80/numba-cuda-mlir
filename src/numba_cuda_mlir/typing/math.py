@@ -23,6 +23,13 @@ def _math_result_type(*arg_types):
     return max(floats, key=lambda ty: getattr(ty, "bitwidth", 0))
 
 
+def _pow_result_type(base, exponent):
+    """A float base raised to an integer exponent keeps the base type."""
+    if isinstance(base, types.Float) and isinstance(exponent, types.Integer):
+        return base
+    return _math_result_type(base, exponent)
+
+
 def _make_unary_math_template(key, return_type_fn=None):
     """
     Create a typing template for unary math functions.
@@ -129,10 +136,11 @@ for func in [
     math.hypot,
     math.fmod,
     math.remainder,
-    math.pow,
     math.nextafter,
 ]:
     _make_binary_math_template(func)
+
+_make_binary_math_template(math.pow, _pow_result_type)
 
 
 # Special case: frexp returns a tuple (mantissa: float, exponent: int32)

@@ -1283,11 +1283,9 @@ def math_pow_cg(mlir_lower, target, args, kwargs):
     """math.pow(x, y) - x raised to power y"""
     assert not kwargs, "math_pow does not accept any keyword arguments"
     assert len(args) == 2, "math_pow expects 2 arguments"
-    x = _load_as_float(mlir_lower, args[0])
-    y = _load_as_float(mlir_lower, args[1])
-    unified_type = lowering_utilities.numpy_implicit_type_promotion(x.type, y.type)
-    x = convert(x, unified_type)
-    y = convert(y, unified_type)
+    target_type = mlir_lower.get_numba_type(target.name)
+    float_type = mlir_lower.get_mlir_type(target_type)
+    x, y = (_load_and_convert_operand(mlir_lower, a, target_type, float_type) for a in args)
     result = math_dialect.powf(x, y)
     mlir_lower.store_var(target, result)
 

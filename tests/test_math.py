@@ -231,6 +231,22 @@ def test_math_rounding_float32_stays_float32(fn, np_fn):
     assert ".f64" not in ptx
 
 
+def test_math_pow_float32_integer_exponent_stays_float32():
+    @cuda.jit
+    def kernel(src, exponents, out):
+        i = cuda.grid(1)
+        if i < src.size:
+            out[i] = math.pow(src[i], exponents[i])
+
+    src = np.array([1.5, -2.0, 0.5, 3.0], dtype=np.float32)
+    exponents = np.array([2, 3, -2, 5], dtype=np.int32)
+    out = cuda.device_array(src.size, dtype=np.float32)
+    kernel[1, 32](cuda.to_device(src), cuda.to_device(exponents), out)
+    np.testing.assert_allclose(out.copy_to_host(), src ** exponents.astype(np.float32), rtol=1e-6)
+    ptx = next(iter(kernel.inspect_asm().values()))
+    assert ".f64" not in ptx
+
+
 def test_math_ceil():
     @cuda.jit()
     def math_ceil_kernel(x):
