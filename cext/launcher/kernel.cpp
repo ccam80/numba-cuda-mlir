@@ -1568,6 +1568,14 @@ public:
             Py_INCREF(obj);
         return &it->second;
     }
+
+    int traverse(visitproc visit, void* arg) const {
+        for (const auto& e : map_) {
+            for (PyTypeObject* obj : e.first)
+                Py_VISIT(obj);
+        }
+        return 0;
+    }
 };
 
 struct KernelDispatcher {
@@ -1592,7 +1600,7 @@ struct KernelDispatcher {
     int traverse(visitproc visit, void* arg) const {
         Py_VISIT(compile_func.get());
         Py_VISIT(ensure_context_func.get());
-        return 0;
+        return arg_profiles.traverse(visit, arg);
     }
 };
 
