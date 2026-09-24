@@ -24,8 +24,14 @@ def _math_result_type(*arg_types):
 
 
 def _pow_result_type(base, exponent):
-    """A float base raised to an integer exponent keeps the base type."""
-    if isinstance(base, types.Float) and isinstance(exponent, types.Integer):
+    """A float base raised to an exponent that converts safely to int32 keeps the base type."""
+    if isinstance(base, types.Float) and exponent in (
+        types.int8,
+        types.int16,
+        types.int32,
+        types.uint8,
+        types.uint16,
+    ):
         return base
     return _math_result_type(base, exponent)
 
