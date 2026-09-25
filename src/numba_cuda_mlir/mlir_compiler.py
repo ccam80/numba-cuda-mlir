@@ -51,6 +51,7 @@ from numba_cuda_mlir.numbair_transforms import (
     NumbaCudaMlirLiteralUnroll,
     NumbaCudaMlirInlineInlinables,
     PostInlineWholeFunctionPlanners,
+    TypedWholeFunctionPlanners,
 )
 
 import numba_cuda_mlir.mlir_lowering as lowering
@@ -267,6 +268,14 @@ def get_compiler_class(
             # Numba legalization
             pm.add_pass(IRLegalization, "ensure IR is legal prior to lowering")
             pm.add_pass(AnnotateTypes, "annotate types")
+
+            # Typed whole-function extensions see the final typed Numba IR,
+            # including overload bodies inlined by InlineOverloads, and run at
+            # the last possible point before Numba-to-MLIR lowering.
+            pm.add_pass(
+                TypedWholeFunctionPlanners,
+                "typed whole-function extension planners",
+            )
 
             # Lowering to MLIR
             pm.add_pass(MLIRBackend, "Run MLIR backend")

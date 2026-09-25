@@ -27,7 +27,14 @@ class WholeFunctionPlanner:
     Planners run after device-function inlining and before type inference. They
     may inspect and rewrite any block in ``state.func_ir`` and must return a
     Boolean indicating whether they changed the IR.
+
+    ``cache_safe`` declares whether persistent dispatch-cache loads and saves
+    may proceed while this planner is registered; the cache key does not
+    include planner effects, so only planners whose effect is deterministic
+    and keyed into the embedder's own cache identity set it to ``True``.
     """
+
+    cache_safe = False
 
     def __init__(self, state):
         self.state = state
@@ -43,6 +50,15 @@ class WholeFunctionPlanner:
         """Inspect or rewrite the current function and report whether it changed."""
 
         raise NotImplementedError
+
+
+class TypedWholeFunctionPlanner(WholeFunctionPlanner):
+    """Base class for whole-function planners over typed Numba IR.
+
+    Typed planners run on the fully inlined, legalized, typed IR
+    immediately before lowering to MLIR, so ``state.typemap`` and
+    ``state.calltypes`` cover the whole function body.
+    """
 
 
 class _WholeFunctionPlannerRegistry:
@@ -64,6 +80,15 @@ class _WholeFunctionPlannerRegistry:
     def has_planners(self) -> bool:
         with self._lock:
             return bool(self._planners)
+
+    @property
+    def all_cache_safe(self) -> bool:
+        """Whether every registered planner permits dispatch caching."""
+        with self._lock:
+            return all(
+                getattr(planner_cls, "cache_safe", False)
+                for planner_cls in self._planners
+            )
 
     def apply(self, state) -> bool:
         """Run each planner once with coherent IR and repair every mutation."""
@@ -99,6 +124,28 @@ class _WholeFunctionPlannerRegistry:
 
 
 _planner_registry = _WholeFunctionPlannerRegistry()
+
+
+class _TypedWholeFunctionPlannerRegistry(_WholeFunctionPlannerRegistry):
+    """Registry whose entries must consume the typed-planner contract."""
+
+    def register(self, planner_cls):
+        if not isinstance(planner_cls, type) or not issubclass(
+            planner_cls, TypedWholeFunctionPlanner
+        ):
+            raise TypeError(f"{planner_cls!r} is not a TypedWholeFunctionPlanner subclass")
+        return super().register(planner_cls)
+
+    @staticmethod
+    def _repair_ir(func_ir) -> None:
+        # Rebuild definitions only; the typemap and calltypes stay valid.
+        func_ir._reset_analysis_variables()
+        func_ir._definitions = build_definitions(func_ir.blocks)
+        for block in func_ir.blocks.values():
+            block.verify()
+
+
+_typed_planner_registry = _TypedWholeFunctionPlannerRegistry()
 
 
 def require_launch_config(state) -> dict:
@@ -159,9 +206,21 @@ def register_planner(planner_cls):
     return _planner_registry.register(planner_cls)
 
 
+def register_typed_planner(planner_cls):
+    """Register a planner that runs over fully typed, inlined Numba IR.
+
+    Register planners before compiling any dispatcher that needs them.
+    Registration does not invalidate existing in-memory overloads.
+    """
+
+    return _typed_planner_registry.register(planner_cls)
+
+
 __all__ = [
     "WholeFunctionPlanner",
+    "TypedWholeFunctionPlanner",
     "register_planner",
+    "register_typed_planner",
     "require_launch_config",
     "set_required_dynamic_shared_memory",
 ]
