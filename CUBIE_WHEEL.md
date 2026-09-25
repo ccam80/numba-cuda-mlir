@@ -85,21 +85,14 @@ publishing only when validation fails.
 
 ## Routine: sync cubie's shims
 
-Each open Python-side PR cubie uses is a cubie shim: the definitions
-the branch changes when merged onto this wheel, run at `import cubie`.
-In a cubie branch off `main`:
+cubie's `src/cubie/backend/_mlir_compat.py` has one section per open
+Python-side PR cubie uses, matching that PR as merged onto this wheel.
+In a cubie branch off `main`, by hand:
 
-1. Edit `src/cubie/backend/mlir_shims/prs.txt`: drop merged PRs'
-   branches, add new ones.
-2. For each branch that conflicts with the wheel, push a resolved
-   merge of the new wheel tag and the branch as `cubie-shims/<branch>`
-   on origin, replacing any older one.
-3. `git fetch origin`, then from cubie:
-   `python ci/tools/sync_mlir_shims.py --ncm <this checkout> --wheel cubie-wheel-<version>`.
-4. Give each `manual` block the script reports a handler in
-   `_mlir_compat._MANUAL_SHIMS`, keyed by the block text's SHA-256.
-5. Pin cubie's `mlir*` extras to `==<version>`.
-6. Run the shimmed PRs' tests (validation below).
+1. Delete the sections of PRs that merged.
+2. Update each remaining section to the PR's current code.
+3. Add a section for each new Python-side PR cubie uses.
+4. Pin cubie's `mlir*` extras to `==<version>`.
 
 ## Routine: add a new native-code patch
 
@@ -151,17 +144,7 @@ pytest tests/test_kernel_exceptions.py \
        --override-ini="addopts="
 ```
 
-Shimmed PRs' tests: export this branch's `tests/` to a scratch
-directory, overlay each shimmed branch's test files from its merge
-onto the wheel (`cubie-shims/<branch>` where one exists), write a
-plugin module containing `import cubie`, and run the overlaid files:
-
-```bash
-PYTHONPATH=<scratch> pytest <overlaid test files> -p <plugin module> \
-       --override-ini="addopts="
-```
-
-Reference result (0.5.3.1, RTX 4070 SUPER, CUDA 13): cubie 3800/0, fork 247/2xf (plus `tests/test_dispatcher_lifetime.py` and `tests/test_loop_unroll.py`), shimmed PR tests 418 passed, 2 failed, 3 skipped, 11 xfailed. The 2 failures are `test_ssa.py::TestSSAViolators`, which expects `_find_defs_violators` to return the violators alone; `perf-ssa-restricted-sweeps` returns a tuple.
+Reference result (0.5.3.1, RTX 4070 SUPER, CUDA 13): cubie 3800/0, fork 247/2xf (plus `tests/test_dispatcher_lifetime.py` and `tests/test_loop_unroll.py`).
 
 ## Publish
 
