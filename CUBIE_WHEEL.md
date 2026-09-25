@@ -85,10 +85,9 @@ publishing only when validation fails.
 
 ## Routine: sync cubie's shims
 
-cubie mirrors each open Python-side PR it uses as a shim: the
-definitions the branch changes, merged onto this wheel, executed
-unconditionally at `import cubie`. One shim per PR, identical to the
-PR. In a cubie branch off `main`:
+Each open Python-side PR cubie uses is a cubie shim: the definitions
+the branch changes when merged onto this wheel, run at `import cubie`.
+In a cubie branch off `main`:
 
 1. Edit `src/cubie/backend/mlir_shims/prs.txt`: drop merged PRs'
    branches, add new ones.
