@@ -64,11 +64,10 @@ for b in selective-fastmath fix-lineinfo-multi-file-pr \
          feat/loop-unroll-hints kernel-dispatcher-gc-pr; do
   git merge --no-edit origin/$b
 done
-# typed-planner hook: its branch sits on an old wheel base, so apply
-# only its own commits as one diff
+# typed-planner hook: apply only its own commits
 git diff f51537c origin/codex/lean-typed-scheduler | git apply --index
 git commit -m "feat: typed whole-function planner hook with cache-safety contract"
-# packaging layer: the old wheel's packaging files against its upstream base
+# packaging files from the previous wheel
 git diff <old-base> <old cubie-wheel> -- .github/workflows/cubie-wheels.yml \
   CUBIE_WHEEL.md NOTICE pyproject.toml | git apply --index -3
 ```
@@ -80,9 +79,8 @@ git diff <old-base> <old cubie-wheel> -- .github/workflows/cubie-wheels.yml \
   upstream main first (it needs it for the upstream PR anyway).
 - Bump `VERSION`, tag the outgoing `cubie-wheel` head as
   `cubie-wheel-<old version>` and push the tag, then force-push the
-  recreated branch to `cubie-wheel`. Every published build stays
-  reachable through its tag; branch a hotfix from the tag with
-  `git checkout -b cubie-wheel-<version>-fix cubie-wheel-<version>`.
+  recreated branch to `cubie-wheel`. To patch a published build,
+  branch from its tag.
 
 A rebuild request means the full cycle: recreate the branch, build in
 CI, validate a built wheel in a fresh cubie env (suites below), and
