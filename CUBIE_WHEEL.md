@@ -7,9 +7,8 @@ requests. CuBIE's `mlir*` extras install it in place of the stock
 wheel. The import package is unchanged (`numba_cuda_mlir`), so the
 two distributions must never share an environment.
 
-CuBIE-side context lives in cubie's
-`docs/source/developer_guide/mlir_patched_wheel.rst`; this file is
-the fork-side runbook.
+CuBIE-side context lives in cubie's `src/cubie/backend/AGENTS.md`;
+this file is the fork-side runbook.
 
 ## Branch anatomy
 
@@ -26,11 +25,9 @@ the fork-side runbook.
    | ccam80#6 | `codex/lean-typed-scheduler` | Python typed-planner hook |
 
    Python-side upstream PRs stay **out** of this branch: cubie
-   applies those at runtime via `cubie._mlir_compat`, which
-   feature-detects the installed build and no-ops once a fix is
-   present natively. Adding them here buys nothing and multiplies
-   merge conflicts. Exception: `register_typed_planner` must exist in
-   the installed wheel, so the typed-planner hook rides here.
+   carries them as shims generated against this exact wheel (routine
+   below). Exception: `register_typed_planner` must exist in the
+   installed wheel, so the typed-planner hook rides here.
 
 2. The packaging commits: distribution rename in `pyproject.toml`,
    version in `src/numba_cuda_mlir/VERSION`, provenance paragraph in
@@ -72,9 +69,8 @@ git diff <old-base> <old cubie-wheel> -- .github/workflows/cubie-wheels.yml \
   CUBIE_WHEEL.md NOTICE pyproject.toml | git apply --index -3
 ```
 
-- **Drop any branch whose upstream PR has merged** — the union then
-  simply contains upstream's version, and `_mlir_compat`/the wheel
-  tolerate either state.
+- **Drop any branch whose upstream PR has merged**; the union then
+  contains upstream's version.
 - If a PR branch no longer merges cleanly, rebase that branch onto
   upstream main first (it needs it for the upstream PR anyway).
 - Bump `VERSION`, tag the outgoing `cubie-wheel` head as
@@ -83,8 +79,28 @@ git diff <old-base> <old cubie-wheel> -- .github/workflows/cubie-wheels.yml \
   branch from its tag.
 
 A rebuild request means the full cycle: recreate the branch, build in
-CI, validate a built wheel in a fresh cubie env (suites below), and
-publish. Stop before publishing only when validation fails.
+CI, sync cubie's shims, validate a built wheel in a fresh cubie env
+(suites below), publish, and open the cubie PR. Stop before
+publishing only when validation fails.
+
+## Routine: sync cubie's shims
+
+cubie mirrors each open Python-side PR it uses as a shim: the
+definitions the branch changes, merged onto this wheel, executed
+unconditionally at `import cubie`. One shim per PR, identical to the
+PR. In a cubie branch off `main`:
+
+1. Edit `src/cubie/backend/mlir_shims/prs.txt`: drop merged PRs'
+   branches, add new ones.
+2. For each branch that conflicts with the wheel, push a resolved
+   merge of the new wheel tag and the branch as `cubie-shims/<branch>`
+   on origin, replacing any older one.
+3. `git fetch origin`, then from cubie:
+   `python ci/tools/sync_mlir_shims.py --ncm <this checkout> --wheel cubie-wheel-<version>`.
+4. Give each `manual` block the script reports a handler in
+   `_mlir_compat._MANUAL_SHIMS`, keyed by the block text's SHA-256.
+5. Pin cubie's `mlir*` extras to `==<version>`.
+6. Run the shimmed PRs' tests (validation below).
 
 ## Routine: add a new native-code patch
 
@@ -92,8 +108,8 @@ publish. Stop before publishing only when validation fails.
    upstream PR (with user approval, per project policy).
 2. Merge the branch into `cubie-wheel`, add a row to the table
    above and to the `NOTICE` PR list, bump `VERSION`.
-3. Build, validate, publish (below). Python-side fixes go into
-   `cubie._mlir_compat` instead, with feature detection.
+3. Build, validate, publish (below). Python-side fixes become cubie
+   shims instead (routine above).
 
 ## Build
 
@@ -136,7 +152,17 @@ pytest tests/test_kernel_exceptions.py \
        --override-ini="addopts="
 ```
 
-Reference result (0.5.3.1, RTX 4070 SUPER, CUDA 13): cubie 3800/0, fork 247/2xf (plus `tests/test_dispatcher_lifetime.py` and `tests/test_loop_unroll.py`).
+Shimmed PRs' tests: export this branch's `tests/` to a scratch
+directory, overlay each shimmed branch's test files from its merge
+onto the wheel (`cubie-shims/<branch>` where one exists), write a
+plugin module containing `import cubie`, and run the overlaid files:
+
+```bash
+PYTHONPATH=<scratch> pytest <overlaid test files> -p <plugin module> \
+       --override-ini="addopts="
+```
+
+Reference result (0.5.3.1, RTX 4070 SUPER, CUDA 13): cubie 3800/0, fork 247/2xf (plus `tests/test_dispatcher_lifetime.py` and `tests/test_loop_unroll.py`), shimmed PR tests 418 passed, 2 failed, 3 skipped, 11 xfailed. The 2 failures are `test_ssa.py::TestSSAViolators`, which expects `_find_defs_violators` to return the violators alone; `perf-ssa-restricted-sweeps` returns a tuple.
 
 ## Publish
 
@@ -146,15 +172,13 @@ Reference result (0.5.3.1, RTX 4070 SUPER, CUDA 13): cubie 3800/0, fork 247/2xf 
 workflow `cubie-wheels.yml`, environment `pypi`. No tokens are
 stored anywhere.
 
-If cubie's dependency floor moves (`cubie-numba-cuda-mlir>=X.Y.Z.N`
-in its `mlir*` extras), publish the wheels **before** merging the
-cubie-side PR — cubie's `mlir-extras-resolve` CI job resolves the
-extras against the live index and stays red until they exist.
+Publish the wheels **before** merging the cubie shim PR that pins
+them: cubie's `mlir-extras-resolve` CI job resolves the extras against
+the live index and stays red until they exist.
 
 ## Retirement
 
 When every native-code PR has merged upstream and NVIDIA ships a
 release containing them, point cubie's `mlir*` extras back at
-`numba-cuda-mlir` with the appropriate minimum version and stop
-publishing. The runtime shims in `cubie._mlir_compat` already
-no-op on such a release.
+`numba-cuda-mlir` pinned to that release, sync the shims against it,
+and stop publishing.
