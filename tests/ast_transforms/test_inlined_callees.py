@@ -127,23 +127,38 @@ def test_inlined_callee_parameter_type_dispatch():
     assert out.copy_to_host()[0] == 64
 
 
-def test_inlined_callee_computed_argument_type_resolves():
-    """An argument computed in the caller still resolves via partial typing."""
-    from numba_cuda_mlir import types
+def test_inlined_callee_computed_argument_type_unresolved():
+    """An argument computed in the caller has no type at inline time."""
 
     @cuda.jit(device=True, inline=True)
     def callee(out, v):
-        if consteval(v == types.float64):
-            out[0] = 1
-        else:
-            out[0] = 2
+        out[0] = consteval(v.ndim)
 
     @cuda.jit
     def kernel(out, a):
         callee(out, a * 2.0)
 
+    with pytest.raises(ConstevalError, match="not known at this call site"):
+        kernel.compile("void(int32[:], float32)")
+
+
+def test_inlined_callee_constant_argument_resolves():
+    """A literal argument resolves to its Numba type."""
+    from numba_cuda_mlir import types
+
+    @cuda.jit(device=True, inline=True)
+    def callee(out, v):
+        if consteval(v == types.int64):
+            out[0] = 1
+        else:
+            out[0] = 2
+
+    @cuda.jit
+    def kernel(out):
+        callee(out, 5)
+
     out = cuda.to_device(np.zeros(1, dtype=np.int32))
-    kernel[1, 1](out, np.float32(1.5))
+    kernel[1, 1](out)
     assert out.copy_to_host()[0] == 1
 
 

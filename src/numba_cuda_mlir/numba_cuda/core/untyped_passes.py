@@ -455,15 +455,11 @@ class InlineInlinables(FunctionPass):
                                 i,
                                 pyfunc,
                             )
-                            # the IR changed, so any partial typemap is stale
-                            state.metadata.pop(self._partial_typemap_key, None)
                             if work_list is not None:
                                 for blk in new_blocks:
                                     work_list.append(blk)
                             return True
         return False
-
-    _partial_typemap_key = "inline_inlinables_partial_typemap"
 
     def _callsite_arg_types(self, state, expr, inline_worker):
         """Return (pos_types, kw_types) for the call's arguments, None where unknown."""
@@ -473,41 +469,28 @@ class InlineInlinables(FunctionPass):
             return None, None
         if getattr(expr, "varkwarg", None) is not None:
             return None, None
-        typemap = self._caller_partial_typemap(state)
-        if typemap is None:
-            return None, None
-        pos_types = tuple(typemap.get(var.name) for var in expr.args)
-        kw_types = {name: typemap.get(var.name) for name, var in expr.kws}
+        pos_types = tuple(self._definition_type(state, var) for var in expr.args)
+        kw_types = {name: self._definition_type(state, var) for name, var in expr.kws}
         return pos_types, kw_types
 
-    def _caller_partial_typemap(self, state):
-        """Partially type the caller, caching the typemap until the IR changes."""
-        if self._partial_typemap_key in state.metadata:
-            cached = state.metadata[self._partial_typemap_key]
-            return cached if cached else None
-
-        from numba_cuda_mlir.numba_cuda.core import typed_passes
-        from numba_cuda_mlir.numba_cuda.core.ir_utils import build_definitions
-
-        typemap = None
-        args = getattr(state, "args", None)
-        # all-pyobject args mark an inlinee frontend replay; skip typing it
-        if args and not all(arg == types.pyobject for arg in args):
+    def _definition_type(self, state, var):
+        """Numba type of a variable defined by an argument or a constant, else None."""
+        try:
+            defn = state.func_ir.get_definition(var)
+        except Exception:
+            return None
+        if isinstance(defn, ir.Arg):
+            args = getattr(state, "args", None)
+            # pyobject args mark an inlinee frontend replay and carry no type
+            if args and defn.index < len(args) and args[defn.index] != types.pyobject:
+                return args[defn.index]
+            return None
+        if isinstance(defn, (ir.Const, ir.Global, ir.FreeVar)):
             try:
-                state.func_ir._definitions = build_definitions(state.func_ir.blocks)
-                typemap, _, _, _ = typed_passes.type_inference_stage(
-                    state.typingctx,
-                    state.targetctx,
-                    state.func_ir,
-                    args,
-                    None,
-                    state.locals,
-                    raise_errors=False,
-                )
+                return types.unliteral(state.typingctx.resolve_value_type(defn.value))
             except Exception:
-                typemap = None
-        state.metadata[self._partial_typemap_key] = typemap if typemap else False
-        return typemap or None
+                return None
+        return None
 
 
 @register_pass(mutates_CFG=False, analysis_only=False)
