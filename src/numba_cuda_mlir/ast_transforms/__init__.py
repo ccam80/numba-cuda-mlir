@@ -8,7 +8,11 @@ from typing import Callable
 
 from numba_cuda_mlir.ast_transforms.common import get_function_ast, recompile_function
 from numba_cuda_mlir.ast_transforms.comprehension import ComprehensionPass
-from numba_cuda_mlir.ast_transforms.consteval import ConstevalError, ConstevalPass
+from numba_cuda_mlir.ast_transforms.consteval import (
+    UNRESOLVED_PARAMETER_TYPE,
+    ConstevalError,
+    ConstevalPass,
+)
 from numba_cuda_mlir.ast_transforms.constant_if import ConstantIfPass
 from numba_cuda_mlir.ast_transforms.empty_body import EmptyBodyRepairPass
 from numba_cuda_mlir.ast_transforms.pipeline import (
@@ -133,15 +137,42 @@ def apply_ast_transforms(
     return func, transformed_source
 
 
-# Stands in for each parameter of an inlined callee, whose types are unknown.
-_INLINEE_PARAMETER = object()
+def transform_inline_callee(
+    pyfunc: Callable,
+    targetoptions: dict,
+    pos_types: tuple = None,
+    kw_types: dict = None,
+) -> Callable:
+    """Apply AST transforms to an inlinee under the caller's options.
 
-
-def transform_inline_callee(pyfunc: Callable, targetoptions: dict) -> Callable:
-    """Apply AST transforms to an inlinee under the caller's options; parameters resolve to a placeholder."""
+    pos_types/kw_types hold call-site argument types, None where unknown.
+    A known type resolves in consteval like a kernel parameter's; using a
+    parameter with an unknown type raises ConstevalError.
+    """
     if not targetoptions.get("experimental_ast_transforms", False):
         return pyfunc
 
-    argtypes = (_INLINEE_PARAMETER,) * len(inspect.signature(pyfunc).parameters)
+    argtypes = _bind_callee_parameter_types(pyfunc, pos_types, kw_types)
     transformed, _ = apply_ast_transforms(pyfunc, targetoptions, argtypes)
     return transformed
+
+
+def _bind_callee_parameter_types(pyfunc: Callable, pos_types: tuple, kw_types: dict) -> tuple:
+    """Per-parameter Numba types from call-site types, unresolved where unknown."""
+    parameters = inspect.signature(pyfunc).parameters
+    variadic = (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+    if any(parameter.kind in variadic for parameter in parameters.values()):
+        # Call-site arguments do not map one-to-one onto a variadic signature.
+        return (UNRESOLVED_PARAMETER_TYPE,) * len(parameters)
+
+    pos_types = pos_types or ()
+    kw_types = kw_types or {}
+    bound = []
+    for index, name in enumerate(parameters):
+        if index < len(pos_types) and pos_types[index] is not None:
+            bound.append(pos_types[index])
+        elif kw_types.get(name) is not None:
+            bound.append(kw_types[name])
+        else:
+            bound.append(UNRESOLVED_PARAMETER_TYPE)
+    return tuple(bound)

@@ -445,18 +445,69 @@ class InlineInlinables(FunctionPass):
                             do_inline = inline_type(expr, state.func_ir, py_func_ir)
                         # if do_inline is True then inline!
                         if do_inline:
-                            pyfunc = inline_worker.transform_inlinee(pyfunc)
+                            pos_types, kw_types = self._callsite_arg_types(
+                                state, expr, inline_worker
+                            )
+                            pyfunc = inline_worker.transform_inlinee(pyfunc, pos_types, kw_types)
                             _, _, _, new_blocks = inline_worker.inline_function(
                                 state.func_ir,
                                 block,
                                 i,
                                 pyfunc,
                             )
+                            # the IR changed, so any partial typemap is stale
+                            state.metadata.pop(self._partial_typemap_key, None)
                             if work_list is not None:
                                 for blk in new_blocks:
                                     work_list.append(blk)
                             return True
         return False
+
+    _partial_typemap_key = "inline_inlinables_partial_typemap"
+
+    def _callsite_arg_types(self, state, expr, inline_worker):
+        """Return (pos_types, kw_types) for the call's arguments, None where unknown."""
+        if inline_worker.inlinee_transform is None:
+            return None, None
+        if getattr(expr, "vararg", None) is not None:
+            return None, None
+        if getattr(expr, "varkwarg", None) is not None:
+            return None, None
+        typemap = self._caller_partial_typemap(state)
+        if typemap is None:
+            return None, None
+        pos_types = tuple(typemap.get(var.name) for var in expr.args)
+        kw_types = {name: typemap.get(var.name) for name, var in expr.kws}
+        return pos_types, kw_types
+
+    def _caller_partial_typemap(self, state):
+        """Partially type the caller, caching the typemap until the IR changes."""
+        if self._partial_typemap_key in state.metadata:
+            cached = state.metadata[self._partial_typemap_key]
+            return cached if cached else None
+
+        from numba_cuda_mlir.numba_cuda.core import typed_passes
+        from numba_cuda_mlir.numba_cuda.core.ir_utils import build_definitions
+
+        typemap = None
+        args = getattr(state, "args", None)
+        # all-pyobject args mark an inlinee frontend replay; skip typing it
+        if args and not all(arg == types.pyobject for arg in args):
+            try:
+                state.func_ir._definitions = build_definitions(state.func_ir.blocks)
+                typemap, _, _, _ = typed_passes.type_inference_stage(
+                    state.typingctx,
+                    state.targetctx,
+                    state.func_ir,
+                    args,
+                    None,
+                    state.locals,
+                    raise_errors=False,
+                )
+            except Exception:
+                typemap = None
+        state.metadata[self._partial_typemap_key] = typemap if typemap else False
+        return typemap or None
 
 
 @register_pass(mutates_CFG=False, analysis_only=False)

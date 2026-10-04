@@ -91,7 +91,9 @@ def test_inlined_callee_sees_caller_target_options():
     np.testing.assert_array_equal(out.copy_to_host(), [expected, expected])
 
 
-def test_inlined_callee_parameter_types_unavailable():
+def test_inlined_callee_parameter_resolves_to_type():
+    """A parameter fed from a kernel parameter resolves to its Numba type."""
+
     @cuda.jit(device=True, inline=True)
     def callee(out):
         out[0] = consteval(out.ndim)
@@ -100,7 +102,98 @@ def test_inlined_callee_parameter_types_unavailable():
     def kernel(out):
         callee(out)
 
-    with pytest.raises(ConstevalError, match="Cannot evaluate consteval argument"):
+    out = cuda.to_device(np.zeros(1, dtype=np.int32))
+    kernel[1, 1](out)
+    assert out.copy_to_host()[0] == 1
+
+
+def test_inlined_callee_parameter_type_dispatch():
+    """Branch selection on a parameter's type works as it does in a kernel."""
+    from numba_cuda_mlir import types
+
+    @cuda.jit(device=True, inline=True)
+    def callee(out, n):
+        if consteval(n == types.int64):
+            out[0] = 64
+        else:
+            out[0] = 32
+
+    @cuda.jit
+    def kernel(out, n):
+        callee(out, n)
+
+    out = cuda.to_device(np.zeros(1, dtype=np.int32))
+    kernel[1, 1](out, np.int64(1))
+    assert out.copy_to_host()[0] == 64
+
+
+def test_inlined_callee_computed_argument_type_resolves():
+    """An argument computed in the caller still resolves via partial typing."""
+    from numba_cuda_mlir import types
+
+    @cuda.jit(device=True, inline=True)
+    def callee(out, v):
+        if consteval(v == types.float64):
+            out[0] = 1
+        else:
+            out[0] = 2
+
+    @cuda.jit
+    def kernel(out, a):
+        callee(out, a * 2.0)
+
+    out = cuda.to_device(np.zeros(1, dtype=np.int32))
+    kernel[1, 1](out, np.float32(1.5))
+    assert out.copy_to_host()[0] == 1
+
+
+def test_inlined_callee_tuple_parameter_unrolls():
+    """A tuple parameter unrolls over its elements, as in a kernel."""
+
+    @cuda.jit(device=True, inline=True)
+    def accumulate(out, t):
+        for v in consteval(t):
+            out[0] += v
+
+    @cuda.jit
+    def kernel(out, t):
+        accumulate(out, t)
+
+    out = cuda.to_device(np.zeros(1))
+    kernel[1, 1](out, (1.0, 2.0))
+    assert out.copy_to_host()[0] == 3.0
+
+
+def test_unresolved_parameter_type_errors():
+    """A consteval comparison on a parameter of unknown type errors, never folds."""
+    from numba_cuda_mlir.ast_transforms import transform_inline_callee
+
+    def callee(out, x):
+        if consteval(x == 0):
+            out[0] = 111
+        else:
+            out[0] = 222
+
+    with pytest.raises(ConstevalError, match="not known at this call site"):
+        transform_inline_callee(callee, {"experimental_ast_transforms": True})
+
+
+def test_nested_inlined_callee_parameter_types_unavailable():
+    """Parameters of a callee inlined inside another inlinee have no types yet."""
+
+    @cuda.jit(device=True, inline=True)
+    def inner(out):
+        out[0] = consteval(out.ndim)
+
+    @cuda.jit(device=True, inline=True)
+    def outer(out):
+        inner(out)
+
+    @cuda.jit
+    def kernel(out):
+        outer(out)
+
+    with pytest.raises(ConstevalError, match="not known at this call site"):
         kernel.compile("void(int32[:])")
 
 

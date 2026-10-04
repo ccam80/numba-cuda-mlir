@@ -272,7 +272,8 @@ class InlineWorker:
         is a function taking Numba IR and validating it for use when inlining
         (this is optional and really to just provide better error messages about
         things which the inliner cannot handle like yield in closure).
-        inlinee_transform(func, targetoptions) runs on chosen inlinees.
+        inlinee_transform(func, targetoptions, pos_types, kw_types) runs on
+        chosen inlinees.
         """
 
         def check(arg, name):
@@ -448,11 +449,11 @@ class InlineWorker:
         freevars = function.__code__.co_freevars
         return self.inline_ir(caller_ir, block, i, callee_ir, freevars, arg_typs=arg_typs)
 
-    def transform_inlinee(self, function):
-        """Apply the configured target-specific transform to an inlinee."""
+    def transform_inlinee(self, function, pos_types=None, kw_types=None):
+        """Apply the configured transform to an inlinee with call-site arg types."""
         if self.inlinee_transform is None:
             return function
-        return self.inlinee_transform(function, self.targetoptions)
+        return self.inlinee_transform(function, self.targetoptions, pos_types, kw_types)
 
     def run_untyped_passes(self, func, enable_ssa=False):
         """
