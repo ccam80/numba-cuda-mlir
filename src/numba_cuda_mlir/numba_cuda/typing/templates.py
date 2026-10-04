@@ -784,10 +784,7 @@ class _OverloadFunctionTemplate(AbstractTemplate):
             # need to run the compiler front end up to type inference to compute
             # a signature
             from numba_cuda_mlir.numba_cuda.flags import Flags
-            from numba_cuda_mlir.numba_cuda.core.inline_closurecall import (
-                InlineWorker,
-                current_inline_caller,
-            )
+            from numba_cuda_mlir.numba_cuda.core.inline_closurecall import InlineWorker
 
             fcomp = disp._compiler
             flags = Flags()
@@ -810,7 +807,6 @@ class _OverloadFunctionTemplate(AbstractTemplate):
                 flags,
                 None,
             )
-            caller = current_inline_caller()
             inline_worker = InlineWorker(
                 tyctx,
                 tgctx,
@@ -818,8 +814,6 @@ class _OverloadFunctionTemplate(AbstractTemplate):
                 compiler_inst,
                 flags,
                 None,
-                targetoptions=caller.targetoptions if caller else None,
-                inlinee_transform=caller.inlinee_transform if caller else None,
             )
 
             # If the inlinee contains something to trigger literal arg dispatch
@@ -832,7 +826,8 @@ class _OverloadFunctionTemplate(AbstractTemplate):
             # situations that will succeed. For context see #5887.
             resolve = disp_type.dispatcher.get_call_template
             template, pysig, folded_args, kws = resolve(new_args, kws)
-            _, iinfo = inline_worker.type_inlinee(disp_type.dispatcher.py_func, folded_args)
+            ir = inline_worker.run_untyped_passes(disp_type.dispatcher.py_func, enable_ssa=True)
+            iinfo = inline_worker.type_inlinee_ir(ir, folded_args)
             sig = iinfo.signature
             # this stores a load of info for the cost model function if supplied
             # it by default is None

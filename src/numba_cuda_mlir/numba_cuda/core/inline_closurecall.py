@@ -255,28 +255,32 @@ class InlineCaller:
         self.targetoptions = targetoptions
         self.inlinee_transform = inlinee_transform
         self.worker = worker
-        self.inlinees = {}
+        self.signatures = {}
 
     def type_inlinee(self, dispatcher, folded_args):
         """Signature of a call to an inlinable dispatcher; None for a recursive call."""
         key = (dispatcher, folded_args)
-        if key not in self.inlinees:
-            self.inlinees[key] = None
+        if key not in self.signatures:
+            # None marks the call as being typed, so a recursive call sees None
+            self.signatures[key] = None
             try:
-                self.inlinees[key] = self.worker.type_inlinee(dispatcher.py_func, folded_args)
+                function = self.worker.transform_inlinee(dispatcher.py_func, folded_args)
+                func_ir = self.worker.run_untyped_passes(
+                    function, enable_ssa=True, args=folded_args
+                )
+                iinfo = self.worker.type_inlinee_ir(func_ir, folded_args)
             except errors.ForceLiteralArg as e:
-                del self.inlinees[key]
+                del self.signatures[key]
 
                 def folded(args, kws):
                     return dispatcher._compiler.fold_argument_types(args, kws)[1]
 
                 raise e.bind_fold_arguments(folded)
             except BaseException:
-                del self.inlinees[key]
+                del self.signatures[key]
                 raise
-        if self.inlinees[key] is None:
-            return None
-        return self.inlinees[key][1].signature
+            self.signatures[key] = iinfo.signature
+        return self.signatures[key]
 
 
 @contextlib.contextmanager
@@ -499,14 +503,14 @@ class InlineWorker:
         freevars = function.__code__.co_freevars
         return self.inline_ir(caller_ir, block, i, callee_ir, freevars, arg_typs=arg_typs)
 
-    def transform_inlinee(self, function, argtypes=None):
+    def transform_inlinee(self, function, argtypes):
         """Apply the configured target-specific transform to an inlinee."""
         if self.inlinee_transform is None:
             return function
         return self.inlinee_transform(function, self.targetoptions, argtypes)
 
-    def type_inlinee(self, function, folded_args):
-        """Transform and type an inlinee for folded_args; return the function and its inline info."""
+    def type_inlinee_ir(self, func_ir, folded_args):
+        """Type an inlinee's SSA IR for folded_args and return its inline info."""
         from numba_cuda_mlir.numba_cuda.core.ir_utils import build_definitions
         from numba_cuda_mlir.numba_cuda.core.typed_passes import (
             PreLowerStripPhis,
@@ -514,15 +518,13 @@ class InlineWorker:
         )
         from numba_cuda_mlir.numba_cuda.typing.templates import Signature, _inline_info
 
-        function = self.transform_inlinee(function, folded_args)
-        func_ir = self.run_untyped_passes(function, enable_ssa=True, args=folded_args)
         typemap, return_type, calltypes, _ = type_inference_stage(
             self.typingctx, self.targetctx, func_ir, folded_args, None
         )
         func_ir = PreLowerStripPhis()._strip_phi_nodes(func_ir)
         func_ir._definitions = build_definitions(func_ir.blocks)
         signature = Signature(return_type, folded_args, None)
-        return function, _inline_info(func_ir, typemap, calltypes, signature)
+        return _inline_info(func_ir, typemap, calltypes, signature)
 
     def run_untyped_passes(self, func, enable_ssa=False, args=None):
         """

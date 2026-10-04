@@ -4,7 +4,6 @@
 from collections import defaultdict, namedtuple
 from contextlib import contextmanager
 from copy import deepcopy, copy
-import functools
 import warnings
 
 from numba_cuda_mlir.numba_cuda.core.compiler_machinery import (
@@ -336,7 +335,7 @@ class InlineInlinables(FunctionPass):
 
     def run_pass(self, state):
         """Run inlining of inlinables"""
-        self._caller = None
+        self._caller_types = None
         if self._DEBUG:
             print("before inline".center(80, "-"))
             print(state.func_ir.dump())
@@ -464,31 +463,38 @@ class InlineInlinables(FunctionPass):
         return False
 
     def _transformed_inlinee(self, state, expr, dispatcher, inline_worker):
-        """The inlinee transformed for the call's argument types, and those types (None if untyped)."""
+        """The inlinee transformed for its call's folded argument types, and those types."""
         if inline_worker.inlinee_transform is None:
             return dispatcher.py_func, None
-        if self._caller is None:
-            self._caller = self._type_caller(state, inline_worker)
-        signature = self._caller.calltypes.get(expr)
-        if signature is not None:
-            typed = self._caller.inlinees.get((dispatcher, signature.args))
-            if typed is not None:
-                return typed[0], signature.args
-        return inline_worker.transform_inlinee(dispatcher.py_func), None
+        if self._caller_types is None:
+            self._caller_types = self._type_caller(state, inline_worker)
+        typemap, typing_errors = self._caller_types
+
+        argtypes = [typemap.get(var.name, types.unknown) for var in expr.args]
+        kwtypes = {name: typemap.get(var.name, types.unknown) for name, var in expr.kws}
+        if types.unknown in argtypes or types.unknown in kwtypes.values():
+            # Raise what typing the caller raises
+            for error in typing_errors or ():
+                if isinstance(error, errors.TypingError):
+                    raise error
+            raise errors.TypingError(
+                f"Cannot determine the argument types of the call to {dispatcher.py_func.__name__}",
+                loc=expr.loc,
+            )
+        _, folded = dispatcher._compiler.fold_argument_types(argtypes, kwtypes)
+        folded = tuple(folded)
+        return inline_worker.transform_inlinee(dispatcher.py_func, folded), folded
 
     def _type_caller(self, state, inline_worker):
-        """Partially type the caller under an InlineCaller that types inlinees."""
+        """Partially type the caller, typing each inlinable call from its transformed callee."""
         from numba_cuda_mlir.numba_cuda.core.typed_passes import type_inference_stage
 
         with inline_closurecall.inline_caller(
             inline_worker.targetoptions,
             inline_worker.inlinee_transform,
             worker=inline_worker,
-        ) as caller:
-            caller.calltypes = {}
-            if types.pyobject in state.args:
-                return caller
-            _, _, calltypes, errs = type_inference_stage(
+        ):
+            typemap, _, _, typing_errors = type_inference_stage(
                 state.typingctx,
                 state.targetctx,
                 state.func_ir,
@@ -497,11 +503,7 @@ class InlineInlinables(FunctionPass):
                 state.locals,
                 raise_errors=False,
             )
-        force_literal = [e for e in errs or () if isinstance(e, errors.ForceLiteralArg)]
-        if force_literal:
-            raise functools.reduce(lambda a, b: a.combine(b), force_literal)
-        caller.calltypes = calltypes or {}
-        return caller
+        return typemap, typing_errors
 
 
 @register_pass(mutates_CFG=False, analysis_only=False)

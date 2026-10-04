@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from numba_cuda_mlir import cuda, extending, types
+from numba_cuda_mlir import cuda, types
 from numba_cuda_mlir.ast_transforms import ConstevalError
 from numba_cuda_mlir.cuda.experimental import consteval, current_target_options
 from numba_cuda_mlir.errors import TypingError
@@ -198,31 +198,6 @@ def test_inlined_callee_literally_matches_call():
     _assert_inlined_matches_called(kernel, 3)
 
 
-def test_inline_overload_parameter_resolves_to_type():
-    def ndim_of(arr):
-        raise NotImplementedError
-
-    @extending.overload(
-        ndim_of,
-        inline="always",
-        typing_registry=extending.typing_registry,
-        lowering_registry=extending.lowering_registry,
-    )
-    def ol_ndim_of(arr):
-        def impl(arr):
-            return consteval(arr.ndim)
-
-        return impl
-
-    @cuda.jit
-    def kernel(out):
-        out[0] = ndim_of(out)
-
-    out = cuda.to_device(np.zeros(1, dtype=np.int32))
-    kernel[1, 1](out)
-    assert out.copy_to_host()[0] == out.ndim
-
-
 def test_recursive_callee_compiles_under_transforms():
     @cuda.jit(device=True, inline=True)
     def triangle(n):
@@ -237,19 +212,6 @@ def test_recursive_callee_compiles_under_transforms():
     out = cuda.to_device(np.zeros(1, dtype=np.int64))
     kernel[1, 1](out, 4)
     assert out.copy_to_host()[0] == 4 + 3 + 2 + 1
-
-
-def test_unresolved_parameter_type_errors():
-    from numba_cuda_mlir.ast_transforms import transform_inline_callee
-
-    def callee(out, x):
-        if consteval(x == 0):
-            out[0] = 111
-        else:
-            out[0] = 222
-
-    with pytest.raises(ConstevalError, match="not known at this call site"):
-        transform_inline_callee(callee, {"experimental_ast_transforms": True})
 
 
 _shadowed = 3

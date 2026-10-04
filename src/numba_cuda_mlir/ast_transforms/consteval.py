@@ -16,18 +16,6 @@ class ConstevalError(Exception):
     pass
 
 
-class _UnresolvedParameterType:
-    """Stands in for a parameter whose Numba type is not known at the call site."""
-
-    __slots__ = ()
-
-    def __repr__(self):
-        return "<unresolved parameter type>"
-
-
-UNRESOLVED_PARAMETER_TYPE = _UnresolvedParameterType()
-
-
 class TargetOptionsReplacer(ast.NodeTransformer):
     """Replace numba_cuda_mlir.current_target_options() calls with a context reference."""
 
@@ -132,21 +120,8 @@ class ConstevalTransformer(ast.NodeTransformer):
             return node.func.attr in self.CONSTEVAL_NAMES
         return False
 
-    def _check_unresolved_parameters(self, node: ast.AST) -> None:
-        """Raise if ``node`` uses a parameter whose type is unknown."""
-        for name in ast.walk(node):
-            if (
-                isinstance(name, ast.Name)
-                and self.param_type_map.get(name.id) is UNRESOLVED_PARAMETER_TYPE
-            ):
-                raise ConstevalError(
-                    f"Cannot evaluate '{ast.unparse(node)}' at compile time: the type "
-                    f"of parameter '{name.id}' is not known at this call site"
-                )
-
     def _eval_expr(self, node: ast.expr) -> any:
         """Evaluate an AST expression node using the current context."""
-        self._check_unresolved_parameters(node)
         # Pre-process: replace current_target_options() calls with context reference
         node = TargetOptionsReplacer().visit(copy.deepcopy(node))
         ast.fix_missing_locations(node)
@@ -307,11 +282,6 @@ class ConstevalTransformer(ast.NodeTransformer):
         param_type = self.param_type_map.get(iter_arg.id)
         if param_type is None:
             return None
-        if param_type is UNRESOLVED_PARAMETER_TYPE:
-            raise ConstevalError(
-                f"Cannot unroll over parameter '{iter_arg.id}': its type "
-                "is not known at this call site"
-            )
 
         from numba_cuda_mlir.numba_cuda import types
 
@@ -450,7 +420,6 @@ class ConstevalTransformer(ast.NodeTransformer):
                 self.local_consts = saved_consts
                 continue
 
-            self._check_unresolved_parameters(stmt)
             # Pre-process: replace current_target_options() calls
             stmt = TargetOptionsReplacer().visit(copy.deepcopy(stmt))
             ast.fix_missing_locations(stmt)
