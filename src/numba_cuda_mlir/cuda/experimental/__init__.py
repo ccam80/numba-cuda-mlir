@@ -62,7 +62,7 @@ def consteval(value=None):
 
     Inlined device functions (``inline=True``) are transformed when the calling
     kernel enables the AST transforms; inside them ``current_target_options()``
-    is the calling kernel's options and parameter names do not resolve to types.
+    is the calling kernel's options and parameter names resolve to their argument types.
     """
     if value is None:
         return _ConstevalContextManager()

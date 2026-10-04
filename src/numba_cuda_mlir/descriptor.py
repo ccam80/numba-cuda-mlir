@@ -40,7 +40,8 @@ from numba_cuda_mlir.numba_cuda.np import numpy_support
 from numba_cuda_mlir.numba_cuda.core.descriptors import TargetDescriptor
 from numba_cuda_mlir.numba_cuda.core.compiler_lock import global_compiler_lock
 from numba_cuda_mlir.numba_cuda.dispatcher import Dispatcher
-from numba_cuda_mlir.numba_cuda.core.options import TargetOptions
+from numba_cuda_mlir.numba_cuda.core.inline_closurecall import current_inline_caller
+from numba_cuda_mlir.numba_cuda.core.options import InlineOptions, TargetOptions
 from numba_cuda_mlir._whole_function_planners import (
     _REQUIRED_DYNAMIC_SHARED_MEMORY_KEY,
     _RequireLaunchConfig,
@@ -3521,14 +3522,27 @@ class MLIRDispatcher(Dispatcher, serialize.ReduceMixin):
         emit kernel metadata for callees."""
         pysig, args = self._compiler.fold_argument_types(args, kws)
         kws = {}
-        if self._can_compile:
-            self._compile_as_device_callee(tuple(args))
+        signature = self._inlinee_signature(tuple(args))
+        if signature is not None:
+            signatures = [signature]
+        else:
+            if self._can_compile:
+                self._compile_as_device_callee(tuple(args))
+            signatures = self.nopython_signatures
         func_name = self.py_func.__name__
         name = "CallTemplate({0})".format(func_name)
-        call_template = typing.make_concrete_template(
-            name, key=func_name, signatures=self.nopython_signatures
-        )
+        call_template = typing.make_concrete_template(name, key=func_name, signatures=signatures)
         return call_template, pysig, args, kws
+
+    def _inlinee_signature(self, args):
+        """Signature of a call the inliner is typing, from the transformed callee."""
+        caller = current_inline_caller()
+        if caller is None or caller.worker is None:
+            return None
+        inline = self.targetoptions.get("inline")
+        if inline is None or InlineOptions(inline).is_never_inline:
+            return None
+        return caller.type_inlinee(self, args)
 
     def recompile(self):
         """Recompile all signatures afresh.

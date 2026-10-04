@@ -772,8 +772,6 @@ class _OverloadFunctionTemplate(AbstractTemplate):
         Type the overloaded function by compiling the appropriate
         implementation for the given args.
         """
-        from numba_cuda_mlir.numba_cuda.core.typed_passes import PreLowerStripPhis
-
         disp, new_args = self._get_impl(args, kws)
         if disp is None:
             return
@@ -785,9 +783,11 @@ class _OverloadFunctionTemplate(AbstractTemplate):
         if not self._inline.is_never_inline:
             # need to run the compiler front end up to type inference to compute
             # a signature
-            from numba_cuda_mlir.numba_cuda.core import typed_passes
             from numba_cuda_mlir.numba_cuda.flags import Flags
-            from numba_cuda_mlir.numba_cuda.core.inline_closurecall import InlineWorker
+            from numba_cuda_mlir.numba_cuda.core.inline_closurecall import (
+                InlineWorker,
+                current_inline_caller,
+            )
 
             fcomp = disp._compiler
             flags = Flags()
@@ -810,6 +810,7 @@ class _OverloadFunctionTemplate(AbstractTemplate):
                 flags,
                 None,
             )
+            caller = current_inline_caller()
             inline_worker = InlineWorker(
                 tyctx,
                 tgctx,
@@ -817,6 +818,8 @@ class _OverloadFunctionTemplate(AbstractTemplate):
                 compiler_inst,
                 flags,
                 None,
+                targetoptions=caller.targetoptions if caller else None,
+                inlinee_transform=caller.inlinee_transform if caller else None,
             )
 
             # If the inlinee contains something to trigger literal arg dispatch
@@ -829,15 +832,8 @@ class _OverloadFunctionTemplate(AbstractTemplate):
             # situations that will succeed. For context see #5887.
             resolve = disp_type.dispatcher.get_call_template
             template, pysig, folded_args, kws = resolve(new_args, kws)
-            ir = inline_worker.run_untyped_passes(disp_type.dispatcher.py_func, enable_ssa=True)
-
-            (typemap, return_type, calltypes, _) = typed_passes.type_inference_stage(
-                self.context, tgctx, ir, folded_args, None
-            )
-            ir = PreLowerStripPhis()._strip_phi_nodes(ir)
-            ir._definitions = numba_cuda.core.ir_utils.build_definitions(ir.blocks)
-
-            sig = Signature(return_type, folded_args, None)
+            _, iinfo = inline_worker.type_inlinee(disp_type.dispatcher.py_func, folded_args)
+            sig = iinfo.signature
             # this stores a load of info for the cost model function if supplied
             # it by default is None
             self._inline_overloads[sig.args] = {"folded_args": folded_args}
@@ -858,7 +854,7 @@ class _OverloadFunctionTemplate(AbstractTemplate):
                 self._compiled_overloads[sig.args] = disp_type.get_overload(sig)
                 # store the inliner information, it's used later in the cost
                 # model function call
-            iinfo = _inline_info(ir, typemap, calltypes, sig)
+            iinfo = iinfo._replace(signature=sig)
             self._inline_overloads[sig.args] = {
                 "folded_args": folded_args,
                 "iinfo": iinfo,

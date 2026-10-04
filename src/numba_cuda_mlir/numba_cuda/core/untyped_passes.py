@@ -4,6 +4,7 @@
 from collections import defaultdict, namedtuple
 from contextlib import contextmanager
 from copy import deepcopy, copy
+import functools
 import warnings
 
 from numba_cuda_mlir.numba_cuda.core.compiler_machinery import (
@@ -335,6 +336,7 @@ class InlineInlinables(FunctionPass):
 
     def run_pass(self, state):
         """Run inlining of inlinables"""
+        self._caller = None
         if self._DEBUG:
             print("before inline".center(80, "-"))
             print(state.func_ir.dump())
@@ -445,18 +447,61 @@ class InlineInlinables(FunctionPass):
                             do_inline = inline_type(expr, state.func_ir, py_func_ir)
                         # if do_inline is True then inline!
                         if do_inline:
-                            pyfunc = inline_worker.transform_inlinee(pyfunc)
+                            pyfunc, args = self._transformed_inlinee(
+                                state, expr, val, inline_worker
+                            )
                             _, _, _, new_blocks = inline_worker.inline_function(
                                 state.func_ir,
                                 block,
                                 i,
                                 pyfunc,
+                                args=args,
                             )
                             if work_list is not None:
                                 for blk in new_blocks:
                                     work_list.append(blk)
                             return True
         return False
+
+    def _transformed_inlinee(self, state, expr, dispatcher, inline_worker):
+        """The inlinee transformed for the call's argument types, and those types (None if untyped)."""
+        if inline_worker.inlinee_transform is None:
+            return dispatcher.py_func, None
+        if self._caller is None:
+            self._caller = self._type_caller(state, inline_worker)
+        signature = self._caller.calltypes.get(expr)
+        if signature is not None:
+            typed = self._caller.inlinees.get((dispatcher, signature.args))
+            if typed is not None:
+                return typed[0], signature.args
+        return inline_worker.transform_inlinee(dispatcher.py_func), None
+
+    def _type_caller(self, state, inline_worker):
+        """Partially type the caller under an InlineCaller that types inlinees."""
+        from numba_cuda_mlir.numba_cuda.core.typed_passes import type_inference_stage
+
+        with inline_closurecall.inline_caller(
+            inline_worker.targetoptions,
+            inline_worker.inlinee_transform,
+            worker=inline_worker,
+        ) as caller:
+            caller.calltypes = {}
+            if types.pyobject in state.args:
+                return caller
+            _, _, calltypes, errs = type_inference_stage(
+                state.typingctx,
+                state.targetctx,
+                state.func_ir,
+                state.args,
+                None,
+                state.locals,
+                raise_errors=False,
+            )
+        force_literal = [e for e in errs or () if isinstance(e, errors.ForceLiteralArg)]
+        if force_literal:
+            raise functools.reduce(lambda a, b: a.combine(b), force_literal)
+        caller.calltypes = calltypes or {}
+        return caller
 
 
 @register_pass(mutates_CFG=False, analysis_only=False)

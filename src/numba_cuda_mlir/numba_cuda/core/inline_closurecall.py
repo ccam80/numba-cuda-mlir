@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: BSD-2-Clause
 
 import types as pytypes  # avoid confusion with numba.types
+import contextlib
+import contextvars
 import copy
 import ctypes
 from numba_cuda_mlir.numba_cuda import HAS_NUMBA
@@ -243,6 +245,55 @@ def check_reduce_func(func_ir, func_var):
     return reduce_func
 
 
+_INLINE_CALLER = contextvars.ContextVar("inline_caller", default=None)
+
+
+class InlineCaller:
+    """The compiling function's options; with ``worker`` set, inlinable calls type from their transformed callee."""
+
+    def __init__(self, targetoptions, inlinee_transform, worker=None):
+        self.targetoptions = targetoptions
+        self.inlinee_transform = inlinee_transform
+        self.worker = worker
+        self.inlinees = {}
+
+    def type_inlinee(self, dispatcher, folded_args):
+        """Signature of a call to an inlinable dispatcher; None for a recursive call."""
+        key = (dispatcher, folded_args)
+        if key not in self.inlinees:
+            self.inlinees[key] = None
+            try:
+                self.inlinees[key] = self.worker.type_inlinee(dispatcher.py_func, folded_args)
+            except errors.ForceLiteralArg as e:
+                del self.inlinees[key]
+
+                def folded(args, kws):
+                    return dispatcher._compiler.fold_argument_types(args, kws)[1]
+
+                raise e.bind_fold_arguments(folded)
+            except BaseException:
+                del self.inlinees[key]
+                raise
+        if self.inlinees[key] is None:
+            return None
+        return self.inlinees[key][1].signature
+
+
+@contextlib.contextmanager
+def inline_caller(targetoptions, inlinee_transform, worker=None):
+    """Make an InlineCaller current for the duration of the block."""
+    token = _INLINE_CALLER.set(InlineCaller(targetoptions, inlinee_transform, worker))
+    try:
+        yield _INLINE_CALLER.get()
+    finally:
+        _INLINE_CALLER.reset(token)
+
+
+def current_inline_caller():
+    """The current InlineCaller, or None outside a compilation."""
+    return _INLINE_CALLER.get()
+
+
 class InlineWorker:
     """A worker class for inlining, this is a more advanced version of
     `inline_closure_call` in that it permits inlining from function type, Numba
@@ -272,7 +323,7 @@ class InlineWorker:
         is a function taking Numba IR and validating it for use when inlining
         (this is optional and really to just provide better error messages about
         things which the inliner cannot handle like yield in closure).
-        inlinee_transform(func, targetoptions) runs on chosen inlinees.
+        inlinee_transform(func, targetoptions, argtypes) runs on inlinees.
         """
 
         def check(arg, name):
@@ -438,29 +489,49 @@ class InlineWorker:
 
         return callee_ir_original, callee_blocks, var_dict, new_blocks
 
-    def inline_function(self, caller_ir, block, i, function, arg_typs=None):
+    def inline_function(self, caller_ir, block, i, function, arg_typs=None, args=None):
         """Inlines the function in the caller_ir at statement index i of block
         `block`. If `arg_typs` is given and the InlineWorker instance was
         initialized with a typemap and calltypes then they will be appropriately
-        updated based on the arg_typs.
+        updated based on the arg_typs. `args` types the untyped passes.
         """
-        callee_ir = self.run_untyped_passes(function)
+        callee_ir = self.run_untyped_passes(function, args=args)
         freevars = function.__code__.co_freevars
         return self.inline_ir(caller_ir, block, i, callee_ir, freevars, arg_typs=arg_typs)
 
-    def transform_inlinee(self, function):
+    def transform_inlinee(self, function, argtypes=None):
         """Apply the configured target-specific transform to an inlinee."""
         if self.inlinee_transform is None:
             return function
-        return self.inlinee_transform(function, self.targetoptions)
+        return self.inlinee_transform(function, self.targetoptions, argtypes)
 
-    def run_untyped_passes(self, func, enable_ssa=False):
+    def type_inlinee(self, function, folded_args):
+        """Transform and type an inlinee for folded_args; return the function and its inline info."""
+        from numba_cuda_mlir.numba_cuda.core.ir_utils import build_definitions
+        from numba_cuda_mlir.numba_cuda.core.typed_passes import (
+            PreLowerStripPhis,
+            type_inference_stage,
+        )
+        from numba_cuda_mlir.numba_cuda.typing.templates import Signature, _inline_info
+
+        function = self.transform_inlinee(function, folded_args)
+        func_ir = self.run_untyped_passes(function, enable_ssa=True, args=folded_args)
+        typemap, return_type, calltypes, _ = type_inference_stage(
+            self.typingctx, self.targetctx, func_ir, folded_args, None
+        )
+        func_ir = PreLowerStripPhis()._strip_phi_nodes(func_ir)
+        func_ir._definitions = build_definitions(func_ir.blocks)
+        signature = Signature(return_type, folded_args, None)
+        return function, _inline_info(func_ir, typemap, calltypes, signature)
+
+    def run_untyped_passes(self, func, enable_ssa=False, args=None):
         """
         Run the compiler frontend's untyped passes over the given Python
         function, and return the function's canonical Numba IR.
 
         Disable SSA transformation by default, since the call site won't be in
-        SSA form and self.inline_ir depends on this being the case.
+        SSA form and self.inline_ir depends on this being the case. `args`
+        defaults to pyobject for every argument.
         """
         from numba_cuda_mlir.numba_cuda.core.compiler import StateDict, _CompileStatus
         from numba_cuda_mlir.numba_cuda.core.untyped_passes import ExtractByteCode
@@ -472,7 +543,7 @@ class InlineWorker:
         state.targetctx = self.targetctx
         state.locals = self.locals
         state.pipeline = self.pipeline
-        state.flags = self.flags
+        state.flags = self.flags.copy()
         state.flags.enable_ssa = enable_ssa
 
         state.func_id = bytecode.FunctionIdentity.from_function(func)
@@ -489,9 +560,11 @@ class InlineWorker:
             state.metadata["inlinee_transform"] = self.inlinee_transform
 
         ExtractByteCode().run_pass(state)
-        # This is a lie, just need *some* args for the case where an obj mode
-        # with lift is needed
-        state.args = len(state.bc.func_id.pysig.parameters) * (types.pyobject,)
+        if args is not None:
+            state.args = tuple(args)
+        else:
+            # This is a lie, just need *some* args for the case where an obj mode with lift is needed
+            state.args = len(state.bc.func_id.pysig.parameters) * (types.pyobject,)
 
         pm = self._compiler_pipeline(state)
 

@@ -10,6 +10,7 @@ import warnings
 from numba_cuda_mlir.numba_cuda import compiler, types, typing
 from numba_cuda_mlir.numba_cuda.core import errors, funcdesc, sigutils
 from numba_cuda_mlir.numba_cuda.core.compiler_lock import global_compiler_lock
+from numba_cuda_mlir.numba_cuda.core.inline_closurecall import inline_caller
 from numba_cuda_mlir.numba_cuda.compiler import CompilerBase, DefaultPassBuilder
 from numba_cuda_mlir.numba_cuda.flags import CUDAFlags
 from numba_cuda_mlir.numba_cuda.core.options import ParallelOptions
@@ -217,6 +218,13 @@ def get_compiler_class(
     launch_config_tracker=None,
 ):
     class MLIRCompiler(CompilerBase):
+        def _compile_core(self):
+            with inline_caller(
+                self.state.metadata["targetoptions"],
+                self.state.metadata.get("inlinee_transform"),
+            ):
+                return super()._compile_core()
+
         def define_pipelines(self):
             dpb = DefaultPassBuilder
             pm = PassManager("mlir")
@@ -299,7 +307,8 @@ def get_compiler_class(
             super().__init__(typingctx, targetctx, library, args, return_type, flags, locals)
             # Attach options early so all passes can see them via state.metadata
             self.state.metadata["targetoptions"] = targetoptions
-            self.state.metadata["inlinee_transform"] = transform_inline_callee
+            if targetoptions.get("experimental_ast_transforms", False):
+                self.state.metadata["inlinee_transform"] = transform_inline_callee
             if launch_config_tracker is not None:
                 self.state.metadata[_LAUNCH_CONFIG_TRACKER_METADATA_KEY] = launch_config_tracker
 
