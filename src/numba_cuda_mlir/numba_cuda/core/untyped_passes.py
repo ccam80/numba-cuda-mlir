@@ -489,10 +489,12 @@ class InlineInlinables(FunctionPass):
         """Partially type the caller, typing each inlinable call from its transformed callee."""
         from numba_cuda_mlir.numba_cuda.core.typed_passes import type_inference_stage
 
+        enclosing = inline_closurecall.current_inline_caller()
         with inline_closurecall.inline_caller(
             inline_worker.targetoptions,
             inline_worker.inlinee_transform,
             worker=inline_worker,
+            cache=None if enclosing is None else enclosing.cache,
         ):
             typemap, _, _, typing_errors = type_inference_stage(
                 state.typingctx,
