@@ -614,7 +614,11 @@ class InlineWorker:
         cache = _current_inline_cache()
         if cache is None:
             return self.run_untyped_passes(function, enable_ssa=enable_ssa, args=args)
-        key = (function, str(self.flags), enable_ssa, None if args is None else tuple(args))
+        # A nested worker's flags carry the enclosing run's SSA setting, which does
+        # not affect this run, so key on the setting this run uses.
+        flags = self.flags.copy()
+        flags.enable_ssa = enable_ssa
+        key = (function, str(flags), None if args is None else tuple(args))
         canonical_ir = cache.callee_irs.get(key)
         if canonical_ir is None:
             canonical_ir = self.run_untyped_passes(function, enable_ssa=enable_ssa, args=args)
