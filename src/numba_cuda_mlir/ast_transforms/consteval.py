@@ -499,8 +499,9 @@ def reads_parameters(func: Callable) -> bool:
     """Whether a consteval in ``func`` names one of its parameters.
 
     We look inside ``consteval(...)`` and ``literally(...)`` arguments and
-    ``with consteval():`` bodies. Only those read parameter types, so a
-    function without such a name transforms the same for any argument types.
+    ``with consteval():`` bodies, because the consteval pass reads parameter
+    types nowhere else. Without such a name we get the same transform for any
+    argument types.
     """
     tree = get_function_ast(func)
     if tree is None:

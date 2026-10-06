@@ -460,9 +460,9 @@ class InlineInlinables(FunctionPass):
         """Inline a call, typing it only when the inlinee or one it inlines needs argument types.
 
         We first transform and inline the callee without argument types. If
-        that callee, or a callee nested inside it, needs argument types, its
-        untyped run raises InlineeNeedsArgTypes before the caller's IR changes,
-        and we inline it again for the types of this call.
+        that callee, or a callee nested inside it, needs argument types, we get
+        InlineeNeedsArgTypes from its untyped run before touching the caller's
+        IR, and we inline it again for the types of this call.
         """
         function = self._untyped_inlinee(dispatcher, inline_worker)
         if function is not None:
@@ -473,7 +473,7 @@ class InlineInlinables(FunctionPass):
                     dispatcher.py_func
                 )
         if any(isinstance(argtype, types.PyObject) for argtype in state.args):
-            # This function is itself an inlinee run without argument types.
+            # We are inside an inlinee's untyped run, so pass the need up to our caller.
             raise inline_closurecall.InlineeNeedsArgTypes(dispatcher.py_func.__name__)
         function, args = self._transformed_inlinee(state, expr, dispatcher, inline_worker)
         return inline_worker.inline_function(state.func_ir, block, i, function, args=args)[3]

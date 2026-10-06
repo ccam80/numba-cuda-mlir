@@ -597,8 +597,8 @@ class InlineWorker:
     def transform_inlinee(self, function, argtypes):
         """Apply the configured target-specific transform to an inlinee.
 
-        With ``argtypes`` of None the transform returns None if it needs the
-        call's argument types.
+        Pass ``argtypes`` of None for a transform without argument types; we
+        return None when the inlinee needs the call's argument types.
 
         Inside a compilation we cache the result per function and argument
         types, so the callee IR cache sees the same function object each time.
