@@ -248,6 +248,10 @@ def check_reduce_func(func_ir, func_var):
 _INLINE_CALLER = contextvars.ContextVar("inline_caller", default=None)
 
 
+class InlineeNeedsArgTypes(Exception):
+    """Raised when an inlinee needs argument types that its untyped caller does not have."""
+
+
 class InlineCache:
     """Hold inlining work done once per signature during one compile call.
 
@@ -259,6 +263,7 @@ class InlineCache:
         self.transformed = {}
         self.callee_irs = {}
         self.inlinees = {}
+        self.needs_arg_types = set()
 
 
 class InlineCaller:
@@ -591,6 +596,9 @@ class InlineWorker:
 
     def transform_inlinee(self, function, argtypes):
         """Apply the configured target-specific transform to an inlinee.
+
+        With ``argtypes`` of None the transform returns None if it needs the
+        call's argument types.
 
         Inside a compilation we cache the result per function and argument
         types, so the callee IR cache sees the same function object each time.

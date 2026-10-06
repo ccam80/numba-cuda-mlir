@@ -449,26 +449,46 @@ class InlineInlinables(FunctionPass):
                             do_inline = inline_type(expr, state.func_ir, py_func_ir)
                         # if do_inline is True then inline!
                         if do_inline:
-                            pyfunc, args = self._transformed_inlinee(
-                                state, expr, val, inline_worker
-                            )
-                            _, _, _, new_blocks = inline_worker.inline_function(
-                                state.func_ir,
-                                block,
-                                i,
-                                pyfunc,
-                                args=args,
-                            )
+                            new_blocks = self._inline(state, block, i, expr, val, inline_worker)
                             if work_list is not None:
                                 for blk in new_blocks:
                                     work_list.append(blk)
                             return True
         return False
 
+    def _inline(self, state, block, i, expr, dispatcher, inline_worker):
+        """Inline a call, typing it only when the inlinee or one it inlines needs argument types.
+
+        We first transform and inline the callee without argument types. If
+        that callee, or a callee nested inside it, needs argument types, its
+        untyped run raises InlineeNeedsArgTypes before the caller's IR changes,
+        and we inline it again for the types of this call.
+        """
+        function = self._untyped_inlinee(dispatcher, inline_worker)
+        if function is not None:
+            try:
+                return inline_worker.inline_function(state.func_ir, block, i, function)[3]
+            except inline_closurecall.InlineeNeedsArgTypes:
+                inline_closurecall.current_inline_caller().cache.needs_arg_types.add(
+                    dispatcher.py_func
+                )
+        if any(isinstance(argtype, types.PyObject) for argtype in state.args):
+            # This function is itself an inlinee run without argument types.
+            raise inline_closurecall.InlineeNeedsArgTypes(dispatcher.py_func.__name__)
+        function, args = self._transformed_inlinee(state, expr, dispatcher, inline_worker)
+        return inline_worker.inline_function(state.func_ir, block, i, function, args=args)[3]
+
+    def _untyped_inlinee(self, dispatcher, inline_worker):
+        """The inlinee transformed without argument types, or None if it needs them."""
+        if inline_worker.inlinee_transform is None:
+            return dispatcher.py_func
+        caller = inline_closurecall.current_inline_caller()
+        if dispatcher.py_func in caller.cache.needs_arg_types:
+            return None
+        return inline_worker.transform_inlinee(dispatcher.py_func, None)
+
     def _transformed_inlinee(self, state, expr, dispatcher, inline_worker):
         """The inlinee transformed for its call's folded argument types, and those types."""
-        if inline_worker.inlinee_transform is None:
-            return dispatcher.py_func, None
         if inline_worker.caller_types is None:
             inline_worker.caller_types = self._type_caller(state, inline_worker)
         typemap, typing_errors = inline_worker.caller_types
