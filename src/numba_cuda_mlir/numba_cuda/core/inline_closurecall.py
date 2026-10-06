@@ -300,6 +300,10 @@ class InlineCaller:
         iinfo = inlinees[key]
         return None if iinfo is None else iinfo.signature
 
+    def inlinee(self, dispatcher, args):
+        """The typed inline info for a call typed by type_inlinee, or None."""
+        return self.cache.inlinees.get((dispatcher, tuple(args)))
+
 
 @contextlib.contextmanager
 def inline_caller(targetoptions, inlinee_transform, worker=None, cache=None):
@@ -391,6 +395,16 @@ def _clone_callee_ir(func_ir):
     new_ir.blocks = new_blocks
     new_ir.block_entry_vars = {}
     return new_ir
+
+
+def is_self_recursive(pyfunc):
+    """Whether a function's bytecode loads its own name."""
+    import dis
+
+    for instr in dis.get_instructions(pyfunc):
+        if instr.opname in ("LOAD_GLOBAL", "LOAD_DEREF") and instr.argval == pyfunc.__name__:
+            return True
+    return False
 
 
 class InlineWorker:
