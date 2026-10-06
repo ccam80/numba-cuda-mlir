@@ -352,7 +352,7 @@ class InlineInlinables(FunctionPass):
         )
         # Numba shares one instance of each pass, and a callee's own pipeline runs
         # this pass in the middle of ours, so keep the caller's types on the
-        # worker made for this run rather than on self.
+        # worker made for this run.
         inline_worker.caller_types = None
 
         modified = False
