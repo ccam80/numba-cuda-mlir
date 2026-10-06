@@ -335,7 +335,6 @@ class InlineInlinables(FunctionPass):
 
     def run_pass(self, state):
         """Run inlining of inlinables"""
-        self._caller_types = None
         if self._DEBUG:
             print("before inline".center(80, "-"))
             print(state.func_ir.dump())
@@ -351,6 +350,10 @@ class InlineInlinables(FunctionPass):
             targetoptions=state.metadata.get("targetoptions"),
             inlinee_transform=state.metadata.get("inlinee_transform"),
         )
+        # Numba shares one instance of each pass, and a callee's own pipeline runs
+        # this pass in the middle of ours, so keep the caller's types on the
+        # worker made for this run rather than on self.
+        inline_worker.caller_types = None
 
         modified = False
         # use a work list, look for call sites via `ir.Expr.op == call` and
@@ -466,9 +469,9 @@ class InlineInlinables(FunctionPass):
         """The inlinee transformed for its call's folded argument types, and those types."""
         if inline_worker.inlinee_transform is None:
             return dispatcher.py_func, None
-        if self._caller_types is None:
-            self._caller_types = self._type_caller(state, inline_worker)
-        typemap, typing_errors = self._caller_types
+        if inline_worker.caller_types is None:
+            inline_worker.caller_types = self._type_caller(state, inline_worker)
+        typemap, typing_errors = inline_worker.caller_types
 
         argtypes = [typemap.get(var.name, types.unknown) for var in expr.args]
         kwtypes = {name: typemap.get(var.name, types.unknown) for name, var in expr.kws}
