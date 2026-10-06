@@ -248,50 +248,66 @@ def check_reduce_func(func_ir, func_var):
 _INLINE_CALLER = contextvars.ContextVar("inline_caller", default=None)
 
 
+class InlineCache:
+    """Inlining work done once per signature during one compile call.
+
+    The compiler makes one cache for each compile call and drops it when the
+    call returns, so nothing here outlives the compilation that filled it.
+    """
+
+    def __init__(self):
+        self.transformed = {}
+        self.callee_irs = {}
+        self.inlinees = {}
+
+
 class InlineCaller:
     """The compiling function's options; with ``worker`` set, inlinable calls type from their transformed callee."""
 
-    def __init__(self, targetoptions, inlinee_transform, worker=None):
+    def __init__(self, targetoptions, inlinee_transform, worker=None, cache=None):
         self.targetoptions = targetoptions
         self.inlinee_transform = inlinee_transform
         self.worker = worker
-        self.inlinees = {}
+        self.cache = InlineCache() if cache is None else cache
 
     def type_inlinee(self, dispatcher, folded_args):
         """Signature of a call to an inlinable dispatcher; None for a recursive call."""
+        inlinees = self.cache.inlinees
         key = (dispatcher, folded_args)
-        if key not in self.inlinees:
+        if key not in inlinees:
             # None marks the call as being typed, so a recursive call sees None
-            self.inlinees[key] = None
+            inlinees[key] = None
             try:
                 function = self.worker.transform_inlinee(dispatcher.py_func, folded_args)
-                func_ir = self.worker.run_untyped_passes(
-                    function, enable_ssa=True, args=folded_args
-                )
+                func_ir = self.worker.callee_ir(function, enable_ssa=True, args=folded_args)
                 iinfo = self.worker.type_inlinee_ir(func_ir, folded_args)
             except errors.ForceLiteralArg as e:
-                del self.inlinees[key]
+                del inlinees[key]
 
                 def folded(args, kws):
                     return dispatcher._compiler.fold_argument_types(args, kws)[1]
 
                 raise e.bind_fold_arguments(folded)
             except BaseException:
-                del self.inlinees[key]
+                del inlinees[key]
                 raise
-            self.inlinees[key] = iinfo
-        iinfo = self.inlinees[key]
+            inlinees[key] = iinfo
+        iinfo = inlinees[key]
         return None if iinfo is None else iinfo.signature
 
     def inlinee(self, dispatcher, args):
         """The typed inline info for a call typed by type_inlinee, or None."""
-        return self.inlinees.get((dispatcher, tuple(args)))
+        return self.cache.inlinees.get((dispatcher, tuple(args)))
 
 
 @contextlib.contextmanager
-def inline_caller(targetoptions, inlinee_transform, worker=None):
-    """Make an InlineCaller current for the duration of the block."""
-    token = _INLINE_CALLER.set(InlineCaller(targetoptions, inlinee_transform, worker))
+def inline_caller(targetoptions, inlinee_transform, worker=None, cache=None):
+    """Make an InlineCaller current for the duration of the block.
+
+    Pass the cache of an enclosing InlineCaller to share its work, or leave it
+    out to start an empty cache.
+    """
+    token = _INLINE_CALLER.set(InlineCaller(targetoptions, inlinee_transform, worker, cache))
     try:
         yield _INLINE_CALLER.get()
     finally:
@@ -301,6 +317,69 @@ def inline_caller(targetoptions, inlinee_transform, worker=None):
 def current_inline_caller():
     """The current InlineCaller, or None outside a compilation."""
     return _INLINE_CALLER.get()
+
+
+def _current_inline_cache():
+    caller = _INLINE_CALLER.get()
+    return None if caller is None else caller.cache
+
+
+def _clone_callee_ir(func_ir):
+    """Structural clone of ``func_ir`` for use as an inline callee.
+
+    Equivalent in effect to deep-copying the IR blocks, but far
+    cheaper: a fresh single Scope is created (with its redefinition
+    state), every Var is recreated in it, and every statement,
+    expression and mutable container is rebuilt. Immutable leaves are
+    shared: Loc objects, constant/global/freevar payloads, and any
+    non-IR values held in expressions. The clone can be freely
+    relabelled, renamed and spliced by ``inline_ir`` without mutating
+    the source IR.
+    """
+    blocks = func_ir.blocks
+    old_scope = next(iter(blocks.values())).scope
+    new_scope = ir.Scope(parent=old_scope.parent, loc=old_scope.loc)
+    new_scope.redefined.update(old_scope.redefined)
+    for name, versions in old_scope.var_redefinitions.items():
+        new_scope.var_redefinitions[name] = set(versions)
+
+    varmap = {}
+    for name, var in old_scope.localvars._con.items():
+        varmap[name] = new_scope.define(name, var.loc)
+
+    def clone_value(value):
+        if isinstance(value, ir.Var):
+            return varmap[value.name]
+        if isinstance(value, ir.Expr):
+            new_expr = copy.copy(value)
+            new_expr._kws = {key: clone_value(item) for key, item in value._kws.items()}
+            return new_expr
+        if isinstance(value, list):
+            return [clone_value(item) for item in value]
+        if isinstance(value, tuple):
+            return tuple(clone_value(item) for item in value)
+        if isinstance(value, dict):
+            return {key: clone_value(item) for key, item in value.items()}
+        return value
+
+    def clone_stmt(stmt):
+        new_stmt = copy.copy(stmt)
+        for name, value in tuple(new_stmt.__dict__.items()):
+            cloned = clone_value(value)
+            if cloned is not value:
+                new_stmt.__dict__[name] = cloned
+        return new_stmt
+
+    new_blocks = {}
+    for label, block in blocks.items():
+        new_block = ir.Block(scope=new_scope, loc=block.loc)
+        new_block.body = [clone_stmt(stmt) for stmt in block.body]
+        new_blocks[label] = new_block
+
+    new_ir = copy.copy(func_ir)
+    new_ir.blocks = new_blocks
+    new_ir.block_entry_vars = {}
+    return new_ir
 
 
 def is_self_recursive(pyfunc):
@@ -386,32 +465,36 @@ class InlineWorker:
         self.typemap = typemap
         self.calltypes = calltypes
 
-    def inline_ir(self, caller_ir, block, i, callee_ir, callee_freevars, arg_typs=None):
+    def inline_ir(
+        self, caller_ir, block, i, callee_ir, callee_freevars, arg_typs=None, preserve_ir=True
+    ):
         """Inlines the callee_ir in the caller_ir at statement index i of block
         `block`, callee_freevars are the free variables for the callee_ir. If
         the callee_ir is derived from a function `func` then this is
         `func.__code__.co_freevars`. If `arg_typs` is given and the InlineWorker
         instance was initialized with a typemap and calltypes then they will be
-        appropriately updated based on the arg_typs.
+        appropriately updated based on the arg_typs. If `preserve_ir` is
+        True, the callee_ir object will be copied before mutating, otherwise
+        it will be mutated in place.
         """
+        callee_ir_original = callee_ir
 
-        # Always copy the callee IR, it gets mutated
-        def copy_ir(the_ir):
-            kernel_copy = the_ir.copy()
-            kernel_copy.blocks = {
-                block_label: copy.deepcopy(block) for block_label, block in the_ir.blocks.items()
-            }
-            return kernel_copy
+        if preserve_ir:
 
-        callee_ir = copy_ir(callee_ir)
+            def copy_ir(the_ir):
+                kernel_copy = the_ir.copy()
+                kernel_copy.blocks = {
+                    block_label: copy.deepcopy(block)
+                    for block_label, block in the_ir.blocks.items()
+                }
+                return kernel_copy
+
+            callee_ir = copy_ir(callee_ir)
 
         # check that the contents of the callee IR is something that can be
         # inlined if a validator is present
         if self.validator is not None:
             self.validator(callee_ir)
-
-        # save an unmutated copy of the callee_ir to return
-        callee_ir_original = copy_ir(callee_ir)
         scope = block.scope
         instr = block.body[i]
         call_expr = instr.value
@@ -514,15 +597,43 @@ class InlineWorker:
         initialized with a typemap and calltypes then they will be appropriately
         updated based on the arg_typs. `args` types the untyped passes.
         """
-        callee_ir = self.run_untyped_passes(function, args=args)
+        callee_ir = self.callee_ir(function, args=args)
         freevars = function.__code__.co_freevars
-        return self.inline_ir(caller_ir, block, i, callee_ir, freevars, arg_typs=arg_typs)
+        return self.inline_ir(
+            caller_ir, block, i, callee_ir, freevars, arg_typs=arg_typs, preserve_ir=False
+        )
 
     def transform_inlinee(self, function, argtypes):
-        """Apply the configured target-specific transform to an inlinee."""
+        """Apply the configured target-specific transform to an inlinee.
+
+        Inside a compilation the result is cached per function and argument
+        types, so that the callee IR cache sees the same function object.
+        """
         if self.inlinee_transform is None:
             return function
-        return self.inlinee_transform(function, self.targetoptions, argtypes)
+        cache = _current_inline_cache()
+        if cache is None:
+            return self.inlinee_transform(function, self.targetoptions, argtypes)
+        key = (function, argtypes)
+        if key not in cache.transformed:
+            cache.transformed[key] = self.inlinee_transform(function, self.targetoptions, argtypes)
+        return cache.transformed[key]
+
+    def callee_ir(self, function, enable_ssa=False, args=None):
+        """Return untyped callee IR that the caller may mutate.
+
+        Inside a compilation we run the untyped passes once per function, flags
+        and argument types, and hand each use a structural clone.
+        """
+        cache = _current_inline_cache()
+        if cache is None:
+            return self.run_untyped_passes(function, enable_ssa=enable_ssa, args=args)
+        key = (function, str(self.flags), enable_ssa, None if args is None else tuple(args))
+        canonical_ir = cache.callee_irs.get(key)
+        if canonical_ir is None:
+            canonical_ir = self.run_untyped_passes(function, enable_ssa=enable_ssa, args=args)
+            cache.callee_irs[key] = canonical_ir
+        return _clone_callee_ir(canonical_ir)
 
     def type_inlinee_ir(self, func_ir, folded_args):
         """Type an inlinee's SSA IR for folded_args and return its inline info."""
