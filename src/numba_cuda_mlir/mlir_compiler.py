@@ -10,6 +10,11 @@ import warnings
 from numba_cuda_mlir.numba_cuda import compiler, types, typing
 from numba_cuda_mlir.numba_cuda.core import errors, funcdesc, sigutils
 from numba_cuda_mlir.numba_cuda.core.compiler_lock import global_compiler_lock
+from numba_cuda_mlir.numba_cuda.core.inline_closurecall import (
+    InlineWorker,
+    callee_ir_validator,
+    inline_caller,
+)
 from numba_cuda_mlir.numba_cuda.compiler import CompilerBase, DefaultPassBuilder
 from numba_cuda_mlir.numba_cuda.flags import CUDAFlags
 from numba_cuda_mlir.numba_cuda.core.options import ParallelOptions
@@ -27,6 +32,7 @@ from numba_cuda_mlir.numba_cuda.core.compiler_machinery import (
 )
 from numba_cuda_mlir.numba_cuda.core.typed_passes import (
     AnnotateTypes,
+    InlineOverloads,
     IRLegalization,
     NopythonTypeInference,
 )
@@ -48,8 +54,8 @@ from numba_cuda_mlir.numba_cuda.core.untyped_passes import (
     InlineInlinables,
 )
 from numba_cuda_mlir.numbair_transforms import (
+    InlineTypedInlinables,
     NumbaCudaMlirLiteralUnroll,
-    NumbaCudaMlirInlineInlinables,
     PostInlineWholeFunctionPlanners,
 )
 
@@ -60,7 +66,7 @@ from numba_cuda_mlir._launch_config import (
     _LAUNCH_CONFIG_TRACKER_OPTION,
 )
 from numba_cuda_mlir.decorators import mlir_jit
-from numba_cuda_mlir.ast_transforms import apply_ast_transforms
+from numba_cuda_mlir.ast_transforms import apply_ast_transforms, transform_inline_callee
 from numba_cuda_mlir.errors import (
     InternalCompilerError,
     UserFacingInternalCompilerError,
@@ -212,11 +218,36 @@ class MLIRBackend(LoweringPass):
         return True
 
 
+def _untyped_pipeline_without_inlining(state):
+    """The untyped pipeline without InlineInlinables."""
+    pm = DefaultPassBuilder.define_untyped_pipeline(state)
+    pm.passes = [(impl, desc) for impl, desc in pm.passes if impl is not InlineInlinables]
+    return pm
+
+
 def get_compiler_class(
     targetoptions: Dict[str, Any],
     launch_config_tracker=None,
 ):
     class MLIRCompiler(CompilerBase):
+        def _compile_core(self):
+            targetoptions = self.state.metadata["targetoptions"]
+            inlinee_transform = self.state.metadata.get("inlinee_transform")
+            worker = InlineWorker(
+                self.state.typingctx,
+                self.state.targetctx,
+                self.state.locals,
+                self,
+                self.state.flags,
+                validator=callee_ir_validator,
+                targetoptions=targetoptions,
+                inlinee_transform=inlinee_transform,
+            )
+            # Inlinees are inlined after typing, so their own untyped passes do not inline.
+            worker._compiler_pipeline = _untyped_pipeline_without_inlining
+            with inline_caller(targetoptions, inlinee_transform, worker=worker):
+                return super()._compile_core()
+
         def define_pipelines(self):
             dpb = DefaultPassBuilder
             pm = PassManager("mlir")
@@ -224,13 +255,12 @@ def get_compiler_class(
             untyped_passes = dpb.define_untyped_pipeline(self.state)
             # Replace passes with numba_cuda_mlir-specific versions:
             # - LiteralUnroll -> NumbaCudaMlirLiteralUnroll (supports both literal_unroll versions)
-            # - InlineInlinables -> NumbaCudaMlirInlineInlinables (skips self-recursive functions)
+            # - InlineInlinables -> nothing; InlineTypedInlinables inlines after typing
             modified_passes = []
             for impl, desc in untyped_passes.passes:
                 if impl is LiteralUnroll:
                     modified_passes.append((NumbaCudaMlirLiteralUnroll, desc))
                 elif impl is InlineInlinables:
-                    modified_passes.append((NumbaCudaMlirInlineInlinables, desc))
                     modified_passes.append(
                         (
                             PostInlineWholeFunctionPlanners,
@@ -243,16 +273,16 @@ def get_compiler_class(
 
             typed_passes = dpb.define_typed_pipeline(self.state)
 
-            def replace_type_inference_pass(implementation, description):
+            mlir_typed_passes = []
+            for implementation, description in typed_passes.passes:
                 if implementation is NopythonTypeInference:
-                    return (MLIRTypeInference, "mlir frontend")
-                else:
-                    return (implementation, description)
-
-            mlir_typed_passes = [
-                replace_type_inference_pass(implementation, description)
-                for implementation, description in typed_passes.passes
-            ]
+                    mlir_typed_passes.append((MLIRTypeInference, "mlir frontend"))
+                    continue
+                if implementation is InlineOverloads:
+                    mlir_typed_passes.append(
+                        (InlineTypedInlinables, "inline inlinable device functions")
+                    )
+                mlir_typed_passes.append((implementation, description))
 
             pm.passes.extend(mlir_typed_passes)
 
@@ -299,6 +329,8 @@ def get_compiler_class(
             super().__init__(typingctx, targetctx, library, args, return_type, flags, locals)
             # Attach options early so all passes can see them via state.metadata
             self.state.metadata["targetoptions"] = targetoptions
+            if targetoptions.get("experimental_ast_transforms", False):
+                self.state.metadata["inlinee_transform"] = transform_inline_callee
             if launch_config_tracker is not None:
                 self.state.metadata[_LAUNCH_CONFIG_TRACKER_METADATA_KEY] = launch_config_tracker
 
