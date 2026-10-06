@@ -249,10 +249,10 @@ _INLINE_CALLER = contextvars.ContextVar("inline_caller", default=None)
 
 
 class InlineCache:
-    """Inlining work done once per signature during one compile call.
+    """Hold inlining work done once per signature during one compile call.
 
-    The compiler makes one cache for each compile call and drops it when the
-    call returns, so nothing here outlives the compilation that filled it.
+    We make one cache for each compile call and drop it when the call returns,
+    so nothing in it outlives the compilation that filled it.
     """
 
     def __init__(self):
@@ -592,8 +592,8 @@ class InlineWorker:
     def transform_inlinee(self, function, argtypes):
         """Apply the configured target-specific transform to an inlinee.
 
-        Inside a compilation the result is cached per function and argument
-        types, so that the callee IR cache sees the same function object.
+        Inside a compilation we cache the result per function and argument
+        types, so the callee IR cache sees the same function object each time.
         """
         if self.inlinee_transform is None:
             return function
