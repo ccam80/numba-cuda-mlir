@@ -15,6 +15,16 @@ from numba_cuda_mlir.numba_cuda.core.untyped_passes import (
 from numba_cuda_mlir.numba_cuda.core import untyped_passes as untyped_passes_module
 from numba_cuda_mlir.numba_cuda.core.typed_passes import PartialTypeInference
 from numba_cuda_mlir.numba_cuda.core import ir
+from numba_cuda_mlir.numba_cuda.core.inline_closurecall import (
+    InlineWorker,
+    callee_ir_validator,
+    current_inline_caller,
+)
+from numba_cuda_mlir.numba_cuda.core.ir_utils import (
+    compute_cfg_from_blocks,
+    dead_code_elimination,
+    simplify_CFG,
+)
 from numba_cuda_mlir.numba_cuda.misc.special import literal_unroll
 from numba_cuda_mlir._whole_function_planners import _planner_registry
 
@@ -133,3 +143,89 @@ class PostInlineWholeFunctionPlanners(FunctionPass):
 
     def run_pass(self, state):
         return _planner_registry.apply(state)
+
+
+@register_pass(mutates_CFG=True, analysis_only=False)
+class InlineTypedInlinables(FunctionPass):
+    """Inline calls to inlinable device functions into the typed caller.
+
+    Type inference types each inlinable call from its callee, transformed and
+    typed for the call's argument types, through the current InlineCaller. This
+    pass splices that typed callee IR at each call site and updates the
+    caller's typemap and calltypes. Inlined bodies are added to the work list,
+    so calls inside them are inlined too.
+    """
+
+    _name = "inline_typed_inlinables"
+
+    def __init__(self):
+        FunctionPass.__init__(self)
+
+    def run_pass(self, state):
+        caller = current_inline_caller()
+        if caller is None or not caller.inlinees:
+            return False
+
+        inline_worker = InlineWorker(
+            state.typingctx,
+            state.targetctx,
+            state.locals,
+            state.pipeline,
+            state.flags,
+            callee_ir_validator,
+            state.typemap,
+            state.calltypes,
+        )
+        modified = False
+        work_list = list(state.func_ir.blocks.items())
+        while work_list:
+            _, block = work_list.pop()
+            for i, instr in enumerate(block.body):
+                if (
+                    isinstance(instr, ir.Assign)
+                    and isinstance(instr.value, ir.Expr)
+                    and instr.value.op == "call"
+                ):
+                    if self._inline_call(state, caller, inline_worker, work_list, block, i):
+                        modified = True
+                        break  # the block was split
+
+        if modified:
+            cfg = compute_cfg_from_blocks(state.func_ir.blocks)
+            for dead in cfg.dead_nodes():
+                del state.func_ir.blocks[dead]
+            dead_code_elimination(state.func_ir, typemap=state.typemap)
+            state.func_ir.blocks = simplify_CFG(state.func_ir.blocks)
+        return modified
+
+    def _inline_call(self, state, caller, inline_worker, work_list, block, i):
+        from numba_cuda_mlir.numba_cuda.compiler import run_frontend
+        from numba_cuda_mlir.numba_cuda.core.options import InlineOptions
+
+        expr = block.body[i].value
+        dispatcher = getattr(state.typemap.get(expr.func.name), "dispatcher", None)
+        signature = state.calltypes.get(expr)
+        if dispatcher is None or signature is None:
+            return False
+        iinfo = caller.inlinee(dispatcher, signature.args)
+        if iinfo is None:
+            return False
+
+        inline_type = dispatcher.targetoptions["inline"]
+        if InlineOptions(inline_type).has_cost_model:
+            if not inline_type(expr, state.func_ir, run_frontend(dispatcher.py_func)):
+                # Lowering calls the compiled function in place of the inlined body.
+                dispatcher._compile_as_device_callee(signature.args)
+                return False
+
+        freevars = iinfo.func_ir.func_id.func.__code__.co_freevars
+        _, _, _, new_blocks = inline_worker.inline_ir(
+            state.func_ir,
+            block,
+            i,
+            iinfo.func_ir,
+            freevars,
+            arg_typs=signature.args,
+        )
+        work_list.extend(new_blocks)
+        return True

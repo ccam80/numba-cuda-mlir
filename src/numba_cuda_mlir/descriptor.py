@@ -40,7 +40,10 @@ from numba_cuda_mlir.numba_cuda.np import numpy_support
 from numba_cuda_mlir.numba_cuda.core.descriptors import TargetDescriptor
 from numba_cuda_mlir.numba_cuda.core.compiler_lock import global_compiler_lock
 from numba_cuda_mlir.numba_cuda.dispatcher import Dispatcher
-from numba_cuda_mlir.numba_cuda.core.inline_closurecall import current_inline_caller
+from numba_cuda_mlir.numba_cuda.core.inline_closurecall import (
+    current_inline_caller,
+    is_self_recursive,
+)
 from numba_cuda_mlir.numba_cuda.core.options import InlineOptions, TargetOptions
 from numba_cuda_mlir._whole_function_planners import (
     _REQUIRED_DYNAMIC_SHARED_MEMORY_KEY,
@@ -3541,6 +3544,9 @@ class MLIRDispatcher(Dispatcher, serialize.ReduceMixin):
             return None
         inline = self.targetoptions.get("inline")
         if inline is None or InlineOptions(inline).is_never_inline:
+            return None
+        # A self-recursive function is compiled and called rather than inlined.
+        if is_self_recursive(self.py_func):
             return None
         return caller.type_inlinee(self, args)
 

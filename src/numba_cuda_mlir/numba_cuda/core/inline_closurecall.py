@@ -255,14 +255,14 @@ class InlineCaller:
         self.targetoptions = targetoptions
         self.inlinee_transform = inlinee_transform
         self.worker = worker
-        self.signatures = {}
+        self.inlinees = {}
 
     def type_inlinee(self, dispatcher, folded_args):
         """Signature of a call to an inlinable dispatcher; None for a recursive call."""
         key = (dispatcher, folded_args)
-        if key not in self.signatures:
+        if key not in self.inlinees:
             # None marks the call as being typed, so a recursive call sees None
-            self.signatures[key] = None
+            self.inlinees[key] = None
             try:
                 function = self.worker.transform_inlinee(dispatcher.py_func, folded_args)
                 func_ir = self.worker.run_untyped_passes(
@@ -270,17 +270,22 @@ class InlineCaller:
                 )
                 iinfo = self.worker.type_inlinee_ir(func_ir, folded_args)
             except errors.ForceLiteralArg as e:
-                del self.signatures[key]
+                del self.inlinees[key]
 
                 def folded(args, kws):
                     return dispatcher._compiler.fold_argument_types(args, kws)[1]
 
                 raise e.bind_fold_arguments(folded)
             except BaseException:
-                del self.signatures[key]
+                del self.inlinees[key]
                 raise
-            self.signatures[key] = iinfo.signature
-        return self.signatures[key]
+            self.inlinees[key] = iinfo
+        iinfo = self.inlinees[key]
+        return None if iinfo is None else iinfo.signature
+
+    def inlinee(self, dispatcher, args):
+        """The typed inline info for a call typed by type_inlinee, or None."""
+        return self.inlinees.get((dispatcher, tuple(args)))
 
 
 @contextlib.contextmanager
@@ -296,6 +301,16 @@ def inline_caller(targetoptions, inlinee_transform, worker=None):
 def current_inline_caller():
     """The current InlineCaller, or None outside a compilation."""
     return _INLINE_CALLER.get()
+
+
+def is_self_recursive(pyfunc):
+    """Whether a function's bytecode loads its own name."""
+    import dis
+
+    for instr in dis.get_instructions(pyfunc):
+        if instr.opname in ("LOAD_GLOBAL", "LOAD_DEREF") and instr.argval == pyfunc.__name__:
+            return True
+    return False
 
 
 class InlineWorker:
