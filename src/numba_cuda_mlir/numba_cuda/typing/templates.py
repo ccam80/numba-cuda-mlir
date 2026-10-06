@@ -669,6 +669,12 @@ def _select_overload_dispatcher(templates, args_match, cur_flags):
     return observed if observed is not None else fallback
 
 
+def _outside_inline_caller():
+    from numba_cuda_mlir.numba_cuda.core.inline_closurecall import outside_inline_caller
+
+    return outside_inline_caller()
+
+
 class _OverloadFunctionTemplate(AbstractTemplate):
     """
     A base class of templates for overload functions.
@@ -825,7 +831,8 @@ class _OverloadFunctionTemplate(AbstractTemplate):
             # the desired effect of ensuring the pipeline call is only made in
             # situations that will succeed. For context see #5887.
             resolve = disp_type.dispatcher.get_call_template
-            template, pysig, folded_args, kws = resolve(new_args, kws)
+            with _outside_inline_caller():
+                template, pysig, folded_args, kws = resolve(new_args, kws)
             ir = inline_worker.run_untyped_passes(disp_type.dispatcher.py_func, enable_ssa=True)
             iinfo = inline_worker.type_inlinee_ir(ir, folded_args)
             sig = iinfo.signature
@@ -845,7 +852,8 @@ class _OverloadFunctionTemplate(AbstractTemplate):
                 # determine whether to inline or not. As a result both compiled
                 # function and inliner info needed, delaying the computation of
                 # this leads to an internal state mess at present. TODO: Fix!
-                sig = disp_type.get_call_type(self.context, new_args, kws)
+                with _outside_inline_caller():
+                    sig = disp_type.get_call_type(self.context, new_args, kws)
                 self._compiled_overloads[sig.args] = disp_type.get_overload(sig)
                 # store the inliner information, it's used later in the cost
                 # model function call
@@ -855,7 +863,8 @@ class _OverloadFunctionTemplate(AbstractTemplate):
                 "iinfo": iinfo,
             }
         else:
-            sig = disp_type.get_call_type(self.context, new_args, kws)
+            with _outside_inline_caller():
+                sig = disp_type.get_call_type(self.context, new_args, kws)
             if sig is None:  # can't resolve for this target
                 return None
             self._compiled_overloads[sig.args] = disp_type.get_overload(sig)
@@ -974,9 +983,11 @@ class _OverloadFunctionTemplate(AbstractTemplate):
         typing_registry = getattr(type(self), "_typing_registry", None)
         if typing_registry is not None:
             disp.targetdescr.typing_context.install_registry(typing_registry)
-        # Make sure that the implementation can be fully compiled
+        # Make sure that the implementation can be fully compiled. The implementation
+        # dispatcher may be inline by default, so keep the inliner from typing it.
         disp_type = types.Dispatcher(disp)
-        disp_type.get_call_type(self.context, args, kws)
+        with _outside_inline_caller():
+            disp_type.get_call_type(self.context, args, kws)
         if cache_key is not None:
             self._impl_cache[cache_key] = disp, args
         return disp, args

@@ -320,6 +320,16 @@ def current_inline_caller():
     return _INLINE_CALLER.get()
 
 
+@contextlib.contextmanager
+def outside_inline_caller():
+    """Type calls inside the block by compiling their callees, as outside a compilation."""
+    token = _INLINE_CALLER.set(None)
+    try:
+        yield
+    finally:
+        _INLINE_CALLER.reset(token)
+
+
 def _current_inline_cache():
     caller = _INLINE_CALLER.get()
     return None if caller is None else caller.cache
