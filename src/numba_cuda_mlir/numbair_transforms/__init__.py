@@ -150,12 +150,12 @@ class PostInlineWholeFunctionPlanners(FunctionPass):
 class InlineTypedInlinables(FunctionPass):
     """Inline calls to inlinable device functions into the typed caller.
 
-    Type inference types each inlinable call from its callee, transformed and
-    typed for the call's argument types, through the current InlineCaller. This
-    pass splices a clone of that typed callee IR at each call site and copies
-    the callee's types into the caller's typemap and calltypes, so a callee is
-    typed once per signature however many sites call it. Inlined bodies are
-    added to the work list, so calls inside them are inlined too.
+    During type inference we type each inlinable call from its callee,
+    transformed and typed for the call's argument types, through the current
+    InlineCaller. Here we splice a clone of that typed callee IR at each call
+    site and copy the callee's types into the caller, so each callee is typed
+    once per signature however many sites call it. We add inlined bodies to the
+    work list so that calls inside them are inlined too.
     """
 
     _name = "inline_typed_inlinables"
@@ -168,7 +168,7 @@ class InlineTypedInlinables(FunctionPass):
         if caller is None or not caller.cache.inlinees:
             return False
 
-        # The worker has no typemap, so inline_ir splices without re-typing.
+        # Give the worker no typemap so that inline_ir splices the callee without typing it again.
         inline_worker = InlineWorker(
             state.typingctx,
             state.targetctx,
