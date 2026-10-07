@@ -134,7 +134,59 @@ def apply_ast_transforms(
 
 
 # Stands in for each parameter of an inlined callee, whose types are unknown.
-_INLINEE_PARAMETER = object()
+class _InlineeParameter:
+    """Stand in for an inlined callee's parameter, which has no compile-time value.
+
+    Every use raises, so a consteval that reads a parameter fails instead of
+    folding against this object.
+    """
+
+    def __repr__(self):
+        return "<inlined device function parameter>"
+
+    def _fail(self, *args, **kwargs):
+        raise TypeError(
+            "an inlined device function's parameters have no compile-time value; "
+            "use constargtype(parameter) for its type"
+        )
+
+    def __getattr__(self, name):
+        self._fail()
+
+
+for _name in (
+    "__eq__",
+    "__ne__",
+    "__lt__",
+    "__le__",
+    "__gt__",
+    "__ge__",
+    "__bool__",
+    "__hash__",
+    "__len__",
+    "__iter__",
+    "__contains__",
+    "__getitem__",
+    "__call__",
+    "__index__",
+    "__int__",
+    "__float__",
+    "__add__",
+    "__radd__",
+    "__sub__",
+    "__rsub__",
+    "__mul__",
+    "__rmul__",
+    "__truediv__",
+    "__floordiv__",
+    "__mod__",
+    "__and__",
+    "__or__",
+    "__neg__",
+):
+    setattr(_InlineeParameter, _name, _InlineeParameter._fail)
+
+_INLINEE_PARAMETER = _InlineeParameter()
 
 
 def transform_inline_callee(pyfunc: Callable, targetoptions: dict) -> Callable:

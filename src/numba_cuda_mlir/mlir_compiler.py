@@ -46,8 +46,10 @@ from numba_cuda_mlir.numba_cuda.typing.typeof import Purpose, typeof
 from numba_cuda_mlir.numba_cuda.core.untyped_passes import (
     LiteralUnroll,
     InlineInlinables,
+    LiteralPropagationSubPipelinePass,
 )
 from numba_cuda_mlir.numbair_transforms import (
+    ConstArgTypeFolding,
     NumbaCudaMlirLiteralUnroll,
     NumbaCudaMlirInlineInlinables,
     PostInlineWholeFunctionPlanners,
@@ -227,6 +229,8 @@ def get_compiler_class(
             # - InlineInlinables -> NumbaCudaMlirInlineInlinables (skips self-recursive functions)
             modified_passes = []
             for impl, desc in untyped_passes.passes:
+                if impl is LiteralPropagationSubPipelinePass:
+                    modified_passes.append((ConstArgTypeFolding, "fold constargtype calls"))
                 if impl is LiteralUnroll:
                     modified_passes.append((NumbaCudaMlirLiteralUnroll, desc))
                 elif impl is InlineInlinables:
