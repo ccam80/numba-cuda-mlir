@@ -244,8 +244,8 @@ def check_reduce_func(func_ir, func_var):
     return reduce_func
 
 
-# While InlineInlinables types its caller, a dispatcher asks the function held
-# here for the signature of a call, so that an inlinee is typed without being compiled.
+# InlineInlinables sets this while it types a caller, and a dispatcher asks the
+# function it holds for a call's signature so that we never compile an inlinee.
 inlinee_typer = contextvars.ContextVar("inlinee_typer", default=None)
 
 
@@ -452,7 +452,8 @@ class InlineWorker:
         """Inlines the function in the caller_ir at statement index i of block
         `block`. If `arg_typs` is given and the InlineWorker instance was
         initialized with a typemap and calltypes then they will be appropriately
-        updated based on the arg_typs. `args` types the untyped passes.
+        updated based on the arg_typs. We run the callee's untyped passes with
+        `args` as its argument types when it is given.
         """
         callee_ir = self.run_untyped_passes(function, args=args)
         freevars = function.__code__.co_freevars
@@ -461,7 +462,7 @@ class InlineWorker:
     def transform_inlinee(self, function, argtypes=None):
         """Apply the configured target-specific transform to an inlinee.
 
-        Without ``argtypes`` the transform returns None when it needs them.
+        Without ``argtypes`` we return None when the transform needs them.
         """
         if self.inlinee_transform is None:
             return function

@@ -453,12 +453,13 @@ class InlineInlinables(FunctionPass):
         return False
 
     def _inline(self, state, block, i, expr, dispatcher, inline_worker):
-        """Inline a call, transforming the callee for the call's argument types if it needs them.
+        """Inline a call, transforming the callee for the call's argument types when it needs them.
 
-        The callee needs them when a consteval in it, or in a callee it inlines,
-        names one of its parameters. We find that out from the transform, or from
-        InlineeNeedsArgTypes raised by the callee's untyped run before the
-        caller's IR changes, and then type the call and inline it again.
+        We first inline the callee without argument types. The transform returns
+        None if a consteval in the callee names one of its parameters, and the
+        callee's untyped run raises InlineeNeedsArgTypes if a callee nested in it
+        does. Both happen before we change the caller's IR, so we can then type
+        the call and inline the callee for those types.
         """
         function = inline_worker.transform_inlinee(dispatcher.py_func)
         if function is not None:
@@ -503,11 +504,11 @@ class InlineInlinables(FunctionPass):
         return tuple(dispatcher._compiler.fold_argument_types(argtypes, kwtypes)[1])
 
     def _inlinee_typer(self, state, inline_worker):
-        """Type calls to the caller's own callees from their transformed IR, not by compiling them.
+        """Return a function that types a call to one of the caller's callees from its transformed IR.
 
-        We leave out every other dispatcher, such as an overload's implementation,
-        which its template compiles, and a callee already being typed, which
-        recurses.
+        The function returns None for any other dispatcher, so that an overload
+        template still compiles its implementation. It also returns None for a
+        callee it is already typing, so that a recursive callee is compiled.
         """
         from numba_cuda_mlir.numba_cuda.core.typed_passes import type_inference_stage
         from numba_cuda_mlir.numba_cuda.typing.templates import Signature
