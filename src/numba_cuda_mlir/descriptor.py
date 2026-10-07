@@ -3523,7 +3523,14 @@ class MLIRDispatcher(Dispatcher, serialize.ReduceMixin):
         pysig, args = self._compiler.fold_argument_types(args, kws)
         kws = {}
         typer = inlinee_typer.get()
-        signature = None if typer is None else typer(self, tuple(args))
+        try:
+            signature = None if typer is None else typer(self, tuple(args))
+        except errors.ForceLiteralArg as e:
+
+            def folded(args, kws):
+                return self._compiler.fold_argument_types(args, kws)[1]
+
+            raise e.bind_fold_arguments(folded)
         if signature is not None:
             signatures = [signature]
         else:

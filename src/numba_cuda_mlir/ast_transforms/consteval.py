@@ -110,14 +110,15 @@ class ConstevalTransformer(ast.NodeTransformer):
         ctx["__numba_cuda_mlir_target_options__"] = self.targetoptions
         return ctx
 
-    def _is_consteval_call(self, node: ast.expr) -> bool:
+    @classmethod
+    def _is_consteval_call(cls, node: ast.expr) -> bool:
         """Check if a node is a call to consteval or literally."""
         if not isinstance(node, ast.Call):
             return False
         if isinstance(node.func, ast.Name):
-            return node.func.id in self.CONSTEVAL_NAMES
+            return node.func.id in cls.CONSTEVAL_NAMES
         elif isinstance(node.func, ast.Attribute):
-            return node.func.attr in self.CONSTEVAL_NAMES
+            return node.func.attr in cls.CONSTEVAL_NAMES
         return False
 
     def _eval_expr(self, node: ast.expr) -> any:
@@ -495,11 +496,7 @@ def reads_parameters(func: Callable) -> bool:
     if tree is None:
         return False
 
-    def is_consteval(node):
-        callee = getattr(node, "func", None)
-        name = getattr(callee, "id", None) or getattr(callee, "attr", None)
-        return isinstance(node, ast.Call) and name in ConstevalTransformer.CONSTEVAL_NAMES
-
+    is_consteval = ConstevalTransformer._is_consteval_call
     parameters = set(inspect.signature(func).parameters)
     for node in ast.walk(tree):
         if is_consteval(node):
