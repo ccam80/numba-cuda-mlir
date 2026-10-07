@@ -350,6 +350,9 @@ class InlineInlinables(FunctionPass):
             targetoptions=state.metadata.get("targetoptions"),
             inlinee_transform=state.metadata.get("inlinee_transform"),
         )
+        # Numba shares one instance of each pass, and a callee's pipeline runs this
+        # pass in the middle of ours, so keep the caller's partial types on our worker.
+        inline_worker.caller_typing = None
 
         modified = False
         # use a work list, look for call sites via `ir.Expr.op == call` and
@@ -475,22 +478,30 @@ class InlineInlinables(FunctionPass):
         return inline_worker.inline_function(state.func_ir, block, i, function, args=argtypes)[3]
 
     def _call_argtypes(self, state, expr, dispatcher, inline_worker):
-        """Partially type the caller and fold the call's argument types as a call would."""
+        """Fold the call's argument types, as a call would, from a partial typing of the caller.
+
+        We type the caller once per run of this pass. Inlining renames only the
+        callee's variables, so the types of the caller's own variables, which
+        hold every call's arguments, stay valid after each inline.
+        """
         from numba_cuda_mlir.numba_cuda.core.typed_passes import type_inference_stage
 
-        token = inline_closurecall.inlinee_typer.set(self._inlinee_typer(state, inline_worker))
-        try:
-            typemap, _, _, typing_errors = type_inference_stage(
-                state.typingctx,
-                state.targetctx,
-                state.func_ir,
-                state.args,
-                None,
-                state.locals,
-                raise_errors=False,
-            )
-        finally:
-            inline_closurecall.inlinee_typer.reset(token)
+        if inline_worker.caller_typing is None:
+            token = inline_closurecall.inlinee_typer.set(self._inlinee_typer(state, inline_worker))
+            try:
+                typemap, _, _, typing_errors = type_inference_stage(
+                    state.typingctx,
+                    state.targetctx,
+                    state.func_ir,
+                    state.args,
+                    None,
+                    state.locals,
+                    raise_errors=False,
+                )
+            finally:
+                inline_closurecall.inlinee_typer.reset(token)
+            inline_worker.caller_typing = typemap, typing_errors
+        typemap, typing_errors = inline_worker.caller_typing
 
         argtypes = [typemap.get(var.name, types.unknown) for var in expr.args]
         kwtypes = {name: typemap.get(var.name, types.unknown) for name, var in expr.kws}
@@ -526,10 +537,13 @@ class InlineInlinables(FunctionPass):
                 if hasattr(callee, "py_func"):
                     callees.add(callee)
         typing = set()
+        signatures = {}
 
         def type_inlinee(dispatcher, argtypes):
             if dispatcher not in callees or dispatcher in typing:
                 return None
+            if (dispatcher, argtypes) in signatures:
+                return signatures[dispatcher, argtypes]
             typing.add(dispatcher)
             try:
                 function = inline_worker.transform_inlinee(dispatcher.py_func, argtypes)
@@ -545,7 +559,8 @@ class InlineInlinables(FunctionPass):
                 raise e.bind_fold_arguments(fold)
             finally:
                 typing.discard(dispatcher)
-            return Signature(return_type, argtypes, None)
+            signatures[dispatcher, argtypes] = Signature(return_type, argtypes, None)
+            return signatures[dispatcher, argtypes]
 
         return type_inlinee
 
