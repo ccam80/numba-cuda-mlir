@@ -288,7 +288,8 @@ class ConstArgTypeFolding(FunctionPass):
                     try:
                         ok, value = evaluate(assign.value)
                     except Exception:
-                        continue
+                        # Leave an expression that fails on these values for typing to report.
+                        ok = False
                     if ok:
                         assign.value = ir.Const(value, assign.value.loc)
                         values[assign.target.name] = value
