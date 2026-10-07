@@ -350,8 +350,8 @@ class InlineInlinables(FunctionPass):
             targetoptions=state.metadata.get("targetoptions"),
             inlinee_transform=state.metadata.get("inlinee_transform"),
         )
-        # Numba shares one instance of each pass, and a callee's pipeline runs this
-        # pass in the middle of ours, so keep the caller's partial types on our worker.
+        # Keep the caller's partial types on this run's worker, not on the pass,
+        # because Numba shares the pass instance with the callee runs nested in ours.
         inline_worker.caller_typing = None
 
         modified = False
@@ -480,9 +480,9 @@ class InlineInlinables(FunctionPass):
     def _call_argtypes(self, state, expr, dispatcher, inline_worker):
         """Fold the call's argument types, as a call would, from a partial typing of the caller.
 
-        We type the caller once per run of this pass. Inlining renames only the
-        callee's variables, so the types of the caller's own variables, which
-        hold every call's arguments, stay valid after each inline.
+        We type the caller once per run of this pass and reuse the types for
+        every later call. That is safe because inlining renames only the callee's
+        variables, and the call arguments are the caller's own variables.
         """
         from numba_cuda_mlir.numba_cuda.core.typed_passes import type_inference_stage
 
