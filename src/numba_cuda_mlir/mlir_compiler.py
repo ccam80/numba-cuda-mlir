@@ -46,8 +46,10 @@ from numba_cuda_mlir.numba_cuda.typing.typeof import Purpose, typeof
 from numba_cuda_mlir.numba_cuda.core.untyped_passes import (
     LiteralUnroll,
     InlineInlinables,
+    LiteralPropagationSubPipelinePass,
 )
 from numba_cuda_mlir.numbair_transforms import (
+    ConstArgTypeFolding,
     NumbaCudaMlirLiteralUnroll,
     NumbaCudaMlirInlineInlinables,
     PostInlineWholeFunctionPlanners,
@@ -60,7 +62,7 @@ from numba_cuda_mlir._launch_config import (
     _LAUNCH_CONFIG_TRACKER_OPTION,
 )
 from numba_cuda_mlir.decorators import mlir_jit
-from numba_cuda_mlir.ast_transforms import apply_ast_transforms
+from numba_cuda_mlir.ast_transforms import apply_ast_transforms, transform_inline_callee
 from numba_cuda_mlir.errors import (
     InternalCompilerError,
     UserFacingInternalCompilerError,
@@ -227,6 +229,8 @@ def get_compiler_class(
             # - InlineInlinables -> NumbaCudaMlirInlineInlinables (skips self-recursive functions)
             modified_passes = []
             for impl, desc in untyped_passes.passes:
+                if impl is LiteralPropagationSubPipelinePass:
+                    modified_passes.append((ConstArgTypeFolding, "fold constargtype calls"))
                 if impl is LiteralUnroll:
                     modified_passes.append((NumbaCudaMlirLiteralUnroll, desc))
                 elif impl is InlineInlinables:
@@ -299,6 +303,7 @@ def get_compiler_class(
             super().__init__(typingctx, targetctx, library, args, return_type, flags, locals)
             # Attach options early so all passes can see them via state.metadata
             self.state.metadata["targetoptions"] = targetoptions
+            self.state.metadata["inlinee_transform"] = transform_inline_callee
             if launch_config_tracker is not None:
                 self.state.metadata[_LAUNCH_CONFIG_TRACKER_METADATA_KEY] = launch_config_tracker
 
