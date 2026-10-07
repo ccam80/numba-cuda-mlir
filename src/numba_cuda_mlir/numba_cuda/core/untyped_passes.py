@@ -513,13 +513,18 @@ class InlineInlinables(FunctionPass):
         from numba_cuda_mlir.numba_cuda.core.typed_passes import type_inference_stage
         from numba_cuda_mlir.numba_cuda.typing.templates import Signature
 
-        callees = {
-            stmt.value.value
-            for block in state.func_ir.blocks.values()
-            for stmt in block.find_insts(ir.Assign)
-            if isinstance(stmt.value, (ir.Global, ir.FreeVar))
-            and hasattr(stmt.value.value, "py_func")
-        }
+        callees = set()
+        for block in state.func_ir.blocks.values():
+            for call in block.find_exprs("call"):
+                definition = guard(state.func_ir.get_definition, call.func)
+                if isinstance(definition, (ir.Global, ir.FreeVar)):
+                    callee = definition.value
+                elif getattr(definition, "op", None) == "getattr":
+                    callee = guard(resolve_func_from_module, state.func_ir, definition)
+                else:
+                    continue
+                if hasattr(callee, "py_func"):
+                    callees.add(callee)
         typing = set()
 
         def type_inlinee(dispatcher, argtypes):

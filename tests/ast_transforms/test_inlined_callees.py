@@ -1,5 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+from types import ModuleType
+
 import numpy as np
 import pytest
 
@@ -278,3 +280,30 @@ def test_rejected_cost_model_does_not_transform(monkeypatch):
         callee(out)
 
     kernel.compile("void(int32[:])")
+
+
+_helpers = ModuleType("_helpers")
+
+
+@pytest.mark.parametrize("through_module", [False, True])
+def test_typed_inlinee_is_not_compiled(through_module):
+    @cuda.jit(device=True, inline=True)
+    def fill(out, v):
+        out[0] = consteval(v.bitwidth)
+
+    _helpers.fill = fill
+
+    if through_module:
+
+        @cuda.jit
+        def kernel(out, a):
+            _helpers.fill(out, a * 2)
+
+    else:
+
+        @cuda.jit
+        def kernel(out, a):
+            fill(out, a * 2)
+
+    kernel.compile("void(int64[:], float32)")
+    assert not fill.overloads
