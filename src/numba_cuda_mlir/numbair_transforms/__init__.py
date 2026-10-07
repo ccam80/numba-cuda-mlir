@@ -148,8 +148,9 @@ class ConstArgTypeFolding(FunctionPass):
     We partially type the function, replace each ``constargtype`` call whose
     argument has a type with a constant holding that type, and evaluate every
     attribute read, operator, subscript and call whose operands are all constant
-    and include such a type. Then we prune the branches those constants decide,
-    which can let more arguments type, so we repeat until no call is left.
+    and include such a type. Then we prune the branches those constants decide.
+    After pruning, more arguments may have types, so we repeat until no call is
+    left.
     """
 
     _name = "const_arg_type_folding"
@@ -267,8 +268,8 @@ class ConstArgTypeFolding(FunctionPass):
                 return True, known[expr.value.name][known[expr.index.name]]
             if expr.op == "call" and not expr.kws and expr.vararg is None:
                 function = known[expr.func.name]
-                # Calling a jitted function here would run it on the host, and
-                # dead_branch_prune reads a branch condition through its bool() call.
+                # Skip jitted functions, which would run on the host here, and bool(),
+                # because dead_branch_prune finds a branch condition through that call.
                 if function is bool or getattr(function, "targetoptions", None) is not None:
                     return False, None
                 return True, function(*(known[arg.name] for arg in expr.args))

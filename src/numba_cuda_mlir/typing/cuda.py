@@ -89,8 +89,8 @@ class ConstArgTypeTemplate(AbstractTemplate):
     key = constargtype
 
     def generic(self, args, kws):
-        # ConstArgTypeFolding replaces every call before full typing. We type it
-        # only so that the partial typing that pass runs can step over the call.
+        # We replace every call in ConstArgTypeFolding before full typing, and
+        # type it here only so that the pass's partial typing can step over it.
         if len(args) == 1 and not kws:
             return signature(types.none, *args)
 

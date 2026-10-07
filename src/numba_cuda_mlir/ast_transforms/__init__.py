@@ -137,8 +137,8 @@ def apply_ast_transforms(
 class _InlineeParameter:
     """Stand in for an inlined callee's parameter, which has no compile-time value.
 
-    Every use raises, so a consteval that reads a parameter fails instead of
-    folding against this object.
+    We raise on every use of this object, so a consteval that reads a parameter
+    fails instead of folding against it.
     """
 
     def __repr__(self):

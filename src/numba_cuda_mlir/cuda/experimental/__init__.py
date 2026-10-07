@@ -79,9 +79,9 @@ def constargtype(value):
     """
     Return the Numba type of an argument at compile time.
 
-    The compiler replaces the call with the argument's type after inlining and
-    folds the attribute reads, comparisons and calls that use it, so a branch
-    on the result is removed before typing::
+    We replace the call with the argument's type after inlining and fold the
+    attribute reads, comparisons and calls that use it, so a branch on the
+    result is removed before typing::
 
         @cuda.jit(device=True, inline=True)
         def store(out, v):
@@ -90,7 +90,7 @@ def constargtype(value):
             else:
                 out[0, 0] = v
 
-    It works in kernels and in inlined device functions alike.
+    Use it in kernels and in inlined device functions alike.
     """
     raise RuntimeError("constargtype() was not replaced at compile time.")
 
