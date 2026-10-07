@@ -396,7 +396,11 @@ class InlineInlinables(FunctionPass):
         return True
 
     def _callee(self, func_ir, expr):
-        """Return the object that a call expression calls, or a false value if we cannot find it."""
+        """Return the object that a call expression calls.
+
+        We return False when the call has no definition we can follow, or when
+        it calls a closure, which another pass inlines.
+        """
         # try and get a definition for the call, this isn't always possible as
         # it might be a eval(str)/part generated awaiting update etc. (parfors)
         try:
