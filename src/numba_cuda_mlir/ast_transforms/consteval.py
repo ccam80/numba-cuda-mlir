@@ -6,7 +6,7 @@ import copy
 import inspect
 from typing import Callable
 
-from numba_cuda_mlir.ast_transforms.common import get_function_context
+from numba_cuda_mlir.ast_transforms.common import get_function_ast, get_function_context
 from numba_cuda_mlir.ast_transforms.pipeline import ASTTransformPass, TransformContext
 
 
@@ -483,6 +483,35 @@ class ConstevalTransformer(ast.NodeTransformer):
             return node
 
         return self._transform_consteval(node)
+
+
+def reads_parameters(func: Callable) -> bool:
+    """Return whether a consteval in ``func`` names one of its parameters.
+
+    We look inside ``consteval(...)`` arguments and ``with consteval():``
+    bodies, because the consteval pass reads parameter types nowhere else.
+    """
+    tree = get_function_ast(func)
+    if tree is None:
+        return False
+
+    def is_consteval(node):
+        callee = getattr(node, "func", None)
+        name = getattr(callee, "id", None) or getattr(callee, "attr", None)
+        return isinstance(node, ast.Call) and name in ConstevalTransformer.CONSTEVAL_NAMES
+
+    parameters = set(inspect.signature(func).parameters)
+    for node in ast.walk(tree):
+        if is_consteval(node):
+            scanned = node.args
+        elif isinstance(node, ast.With) and any(is_consteval(i.context_expr) for i in node.items):
+            scanned = node.body
+        else:
+            continue
+        for part in scanned:
+            if any(isinstance(n, ast.Name) and n.id in parameters for n in ast.walk(part)):
+                return True
+    return False
 
 
 def transform_consteval(

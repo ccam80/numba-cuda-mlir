@@ -445,18 +445,103 @@ class InlineInlinables(FunctionPass):
                             do_inline = inline_type(expr, state.func_ir, py_func_ir)
                         # if do_inline is True then inline!
                         if do_inline:
-                            pyfunc = inline_worker.transform_inlinee(pyfunc)
-                            _, _, _, new_blocks = inline_worker.inline_function(
-                                state.func_ir,
-                                block,
-                                i,
-                                pyfunc,
-                            )
+                            new_blocks = self._inline(state, block, i, expr, val, inline_worker)
                             if work_list is not None:
                                 for blk in new_blocks:
                                     work_list.append(blk)
                             return True
         return False
+
+    def _inline(self, state, block, i, expr, dispatcher, inline_worker):
+        """Inline a call, transforming the callee for the call's argument types if it needs them.
+
+        The callee needs them when a consteval in it, or in a callee it inlines,
+        names one of its parameters. We find that out from the transform, or from
+        InlineeNeedsArgTypes raised by the callee's untyped run before the
+        caller's IR changes, and then type the call and inline it again.
+        """
+        function = inline_worker.transform_inlinee(dispatcher.py_func)
+        if function is not None:
+            try:
+                return inline_worker.inline_function(state.func_ir, block, i, function)[3]
+            except inline_closurecall.InlineeNeedsArgTypes:
+                pass
+        if any(isinstance(argtype, types.PyObject) for argtype in state.args):
+            # This is the untyped run of an enclosing inlinee, so its caller types the call.
+            raise inline_closurecall.InlineeNeedsArgTypes(dispatcher.py_func.__name__)
+        argtypes = self._call_argtypes(state, expr, dispatcher, inline_worker)
+        function = inline_worker.transform_inlinee(dispatcher.py_func, argtypes)
+        return inline_worker.inline_function(state.func_ir, block, i, function, args=argtypes)[3]
+
+    def _call_argtypes(self, state, expr, dispatcher, inline_worker):
+        """Partially type the caller and fold the call's argument types as a call would."""
+        from numba_cuda_mlir.numba_cuda.core.typed_passes import type_inference_stage
+
+        token = inline_closurecall.inlinee_typer.set(self._inlinee_typer(state, inline_worker))
+        try:
+            typemap, _, _, typing_errors = type_inference_stage(
+                state.typingctx,
+                state.targetctx,
+                state.func_ir,
+                state.args,
+                None,
+                state.locals,
+                raise_errors=False,
+            )
+        finally:
+            inline_closurecall.inlinee_typer.reset(token)
+
+        argtypes = [typemap.get(var.name, types.unknown) for var in expr.args]
+        kwtypes = {name: typemap.get(var.name, types.unknown) for name, var in expr.kws}
+        if types.unknown in argtypes or types.unknown in kwtypes.values():
+            for error in typing_errors or ():
+                raise error
+            raise errors.TypingError(
+                f"Cannot determine the argument types of the call to {dispatcher.py_func.__name__}",
+                loc=expr.loc,
+            )
+        return tuple(dispatcher._compiler.fold_argument_types(argtypes, kwtypes)[1])
+
+    def _inlinee_typer(self, state, inline_worker):
+        """Type calls to the caller's own callees from their transformed IR, not by compiling them.
+
+        We leave out every other dispatcher, such as an overload's implementation,
+        which its template compiles, and a callee already being typed, which
+        recurses.
+        """
+        from numba_cuda_mlir.numba_cuda.core.typed_passes import type_inference_stage
+        from numba_cuda_mlir.numba_cuda.typing.templates import Signature
+
+        callees = {
+            stmt.value.value
+            for block in state.func_ir.blocks.values()
+            for stmt in block.find_insts(ir.Assign)
+            if isinstance(stmt.value, (ir.Global, ir.FreeVar))
+            and hasattr(stmt.value.value, "py_func")
+        }
+        typing = set()
+
+        def type_inlinee(dispatcher, argtypes):
+            if dispatcher not in callees or dispatcher in typing:
+                return None
+            typing.add(dispatcher)
+            try:
+                function = inline_worker.transform_inlinee(dispatcher.py_func, argtypes)
+                callee_ir = inline_worker.run_untyped_passes(function, enable_ssa=True, args=argtypes)
+                _, return_type, _, _ = type_inference_stage(
+                    state.typingctx, state.targetctx, callee_ir, argtypes, None
+                )
+            except errors.ForceLiteralArg as e:
+                # Map the literal request onto the caller's arguments.
+                def fold(args, kws):
+                    return dispatcher._compiler.fold_argument_types(args, kws)[1]
+
+                raise e.bind_fold_arguments(fold)
+            finally:
+                typing.discard(dispatcher)
+            return Signature(return_type, argtypes, None)
+
+        return type_inlinee
 
 
 @register_pass(mutates_CFG=False, analysis_only=False)
