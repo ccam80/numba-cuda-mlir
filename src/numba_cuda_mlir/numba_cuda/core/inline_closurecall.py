@@ -477,14 +477,18 @@ class InlineWorker:
         typing = type_inference_stage(self.typingctx, self.targetctx, callee_ir, arg_typs, None)
         return callee_ir, typing
 
-    def transform_inlinee(self, function, argtypes=None):
-        """Apply the configured target-specific transform to an inlinee.
+    def transform_inlinee(self, function, arg_typs=None):
+        """Transform an inlinee with the compiling function's inlinee transform.
 
-        Without ``argtypes`` we return None when the transform needs them.
+        Without a configured transform we return ``function`` unchanged. Otherwise
+        we return what the transform returns: ``function`` itself when there is
+        nothing to change, a new function when there is, or None when ``arg_typs``
+        is None and the transform needs the call's argument types. InlineInlinables
+        then types the call and calls this again with them.
         """
         if self.inlinee_transform is None:
             return function
-        return self.inlinee_transform(function, self.targetoptions, argtypes)
+        return self.inlinee_transform(function, self.targetoptions, arg_typs)
 
     def run_untyped_passes(self, func, enable_ssa=False, arg_typs=None):
         """
