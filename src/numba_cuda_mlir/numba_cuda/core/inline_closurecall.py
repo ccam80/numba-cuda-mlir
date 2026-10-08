@@ -244,13 +244,17 @@ def check_reduce_func(func_ir, func_var):
     return reduce_func
 
 
-# InlineInlinables sets this while it types a caller, and a dispatcher asks the
-# function it holds for a call's signature so that we never compile an inlinee.
+# While InlineInlinables partially types a caller, it stores a function here.
+# MLIRDispatcher.get_call_template asks that function for a call's signature,
+# which it gets by typing the callee's transformed IR instead of compiling the
+# callee. Type inference has no other way to pass this through to call typing.
 inlinee_typer = contextvars.ContextVar("inlinee_typer", default=None)
 
 
 class InlineeNeedsArgTypes(Exception):
-    """Raised when an inlinee's untyped run needs argument types that only its caller has."""
+    """Raised inside an inlinee's untyped run to ask the enclosing InlineInlinables
+    to type the call and inline the callee again. Never reaches the user.
+    """
 
 
 class InlineWorker:
@@ -488,8 +492,13 @@ class InlineWorker:
         function, and return the function's canonical Numba IR.
 
         Disable SSA transformation by default, since the call site won't be in
-        SSA form and self.inline_ir depends on this being the case. Without
-        `arg_typs`, every argument is typed as pyobject.
+        SSA form and self.inline_ir depends on this being the case.
+
+        Without `arg_typs` we type every argument as pyobject. The untyped
+        passes need argument types only to lift loops into object mode, so the
+        placeholder serves any inline that does not need the call's types.
+        InlineInlinables also reads pyobject arguments as the sign that it is
+        running inside such an inline.
         """
         from numba_cuda_mlir.numba_cuda.core.compiler import StateDict, _CompileStatus
         from numba_cuda_mlir.numba_cuda.core.untyped_passes import ExtractByteCode
@@ -501,7 +510,7 @@ class InlineWorker:
         state.targetctx = self.targetctx
         state.locals = self.locals
         state.pipeline = self.pipeline
-        state.flags = self.flags.copy()
+        state.flags = self.flags
         state.flags.enable_ssa = enable_ssa
 
         state.func_id = bytecode.FunctionIdentity.from_function(func)
