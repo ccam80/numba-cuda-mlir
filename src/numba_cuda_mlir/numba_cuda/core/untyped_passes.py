@@ -484,7 +484,7 @@ class InlineInlinables(FunctionPass):
             raise inline_closurecall.InlineeNeedsArgTypes(dispatcher.py_func.__name__)
         argtypes = self._call_argtypes(state, expr, dispatcher, inline_worker)
         function = inline_worker.transform_inlinee(dispatcher.py_func, argtypes)
-        return inline_worker.inline_function(state.func_ir, block, i, function, args=argtypes)[3]
+        return inline_worker.inline_function(state.func_ir, block, i, function, arg_typs=argtypes)[3]
 
     def _call_argtypes(self, state, expr, dispatcher, inline_worker):
         """Fold the call's argument types, as a call would, from a partial typing of the caller.
@@ -521,7 +521,6 @@ class InlineInlinables(FunctionPass):
         template still compiles its implementation. It also returns None for a
         callee it is already typing, so that a recursive callee is compiled.
         """
-        from numba_cuda_mlir.numba_cuda.core.typed_passes import type_inference_stage
         from numba_cuda_mlir.numba_cuda.typing.templates import Signature
 
         calls = (call for block in state.func_ir.blocks.values() for call in block.find_exprs("call"))
@@ -541,13 +540,10 @@ class InlineInlinables(FunctionPass):
             typing.add(dispatcher)
             try:
                 function = inline_worker.transform_inlinee(dispatcher.py_func, argtypes)
-                callee_ir = inline_worker.run_untyped_passes(function, enable_ssa=True, args=argtypes)
-                _, return_type, _, _ = type_inference_stage(
-                    state.typingctx, state.targetctx, callee_ir, argtypes, None
-                )
+                _, results = inline_worker.type_callee(function, argtypes)
             finally:
                 typing.discard(dispatcher)
-            signatures[dispatcher, argtypes] = Signature(return_type, argtypes, None)
+            signatures[dispatcher, argtypes] = Signature(results.return_type, argtypes, None)
             return signatures[dispatcher, argtypes]
 
         return type_inlinee

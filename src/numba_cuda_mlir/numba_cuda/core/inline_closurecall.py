@@ -448,16 +448,30 @@ class InlineWorker:
 
         return callee_ir_original, callee_blocks, var_dict, new_blocks
 
-    def inline_function(self, caller_ir, block, i, function, arg_typs=None, args=None):
+    def inline_function(self, caller_ir, block, i, function, arg_typs=None):
         """Inlines the function in the caller_ir at statement index i of block
-        `block`. If `arg_typs` is given and the InlineWorker instance was
+        `block`. If `arg_typs` is given, the function's untyped passes run with
+        them as its argument types, and if the InlineWorker instance was
         initialized with a typemap and calltypes then they will be appropriately
-        updated based on the arg_typs. We run the callee's untyped passes with
-        `args` as its argument types when it is given.
+        updated based on the arg_typs.
         """
-        callee_ir = self.run_untyped_passes(function, args=args)
+        callee_ir = self.run_untyped_passes(function, arg_typs=arg_typs)
         freevars = function.__code__.co_freevars
         return self.inline_ir(caller_ir, block, i, callee_ir, freevars, arg_typs=arg_typs)
+
+    def type_callee(self, function, arg_typs):
+        """Run the untyped passes over a callee in SSA form and type it for arg_typs.
+
+        Returns
+        -------
+        tuple
+            The callee's IR and its ``type_inference_stage`` results.
+        """
+        from numba_cuda_mlir.numba_cuda.core.typed_passes import type_inference_stage
+
+        callee_ir = self.run_untyped_passes(function, enable_ssa=True, arg_typs=arg_typs)
+        typing = type_inference_stage(self.typingctx, self.targetctx, callee_ir, arg_typs, None)
+        return callee_ir, typing
 
     def transform_inlinee(self, function, argtypes=None):
         """Apply the configured target-specific transform to an inlinee.
@@ -468,14 +482,14 @@ class InlineWorker:
             return function
         return self.inlinee_transform(function, self.targetoptions, argtypes)
 
-    def run_untyped_passes(self, func, enable_ssa=False, args=None):
+    def run_untyped_passes(self, func, enable_ssa=False, arg_typs=None):
         """
         Run the compiler frontend's untyped passes over the given Python
         function, and return the function's canonical Numba IR.
 
         Disable SSA transformation by default, since the call site won't be in
-        SSA form and self.inline_ir depends on this being the case. `args`
-        defaults to pyobject for every argument.
+        SSA form and self.inline_ir depends on this being the case. Without
+        `arg_typs`, every argument is typed as pyobject.
         """
         from numba_cuda_mlir.numba_cuda.core.compiler import StateDict, _CompileStatus
         from numba_cuda_mlir.numba_cuda.core.untyped_passes import ExtractByteCode
@@ -504,8 +518,8 @@ class InlineWorker:
             state.metadata["inlinee_transform"] = self.inlinee_transform
 
         ExtractByteCode().run_pass(state)
-        if args is not None:
-            state.args = tuple(args)
+        if arg_typs is not None:
+            state.args = tuple(arg_typs)
         else:
             # This is a lie, just need *some* args for the case where an obj mode
             # with lift is needed
