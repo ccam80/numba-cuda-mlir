@@ -449,11 +449,11 @@ class InlineWorker:
         return callee_ir_original, callee_blocks, var_dict, new_blocks
 
     def inline_function(self, caller_ir, block, i, function, arg_typs=None):
-        """Inlines the function in the caller_ir at statement index i of block
-        `block`. If `arg_typs` is given, the function's untyped passes run with
-        them as its argument types, and if the InlineWorker instance was
-        initialized with a typemap and calltypes then they will be appropriately
-        updated based on the arg_typs.
+        """Inline ``function`` into ``caller_ir`` at statement ``i`` of ``block``.
+
+        We run the function's untyped passes with ``arg_typs`` as its argument
+        types. If this worker has a typemap and calltypes, we also update them
+        for the inlined function.
         """
         callee_ir = self.run_untyped_passes(function, arg_typs=arg_typs)
         freevars = function.__code__.co_freevars
