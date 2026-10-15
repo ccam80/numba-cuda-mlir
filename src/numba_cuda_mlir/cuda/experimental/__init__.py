@@ -59,6 +59,11 @@ def consteval(value=None):
         with consteval():
             config = load_config()
             N = config["block_size"]
+
+    Inlined device functions (``inline=True``) are transformed when the calling
+    kernel enables the AST transforms; inside them ``current_target_options()``
+    is the calling kernel's options and a consteval that names a parameter
+    raises. Use ``constargtype`` for a parameter's type.
     """
     if value is None:
         return _ConstevalContextManager()
@@ -68,6 +73,26 @@ def consteval(value=None):
         "    from numba_cuda_mlir.cuda.experimental import consteval\n"
         "    @cuda.jit(experimental_ast_transforms=True)"
     )
+
+
+def constargtype(value):
+    """
+    Return the Numba type of an argument at compile time.
+
+    We replace the call with the argument's type after inlining and fold the
+    attribute reads, comparisons and calls that use it, so a branch on the
+    result is removed before typing::
+
+        @cuda.jit(device=True, inline=True)
+        def store(out, v):
+            if constargtype(out).ndim == 1:
+                out[0] = v
+            else:
+                out[0, 0] = v
+
+    Use it in kernels and in inlined device functions alike.
+    """
+    raise RuntimeError("constargtype() was not replaced at compile time.")
 
 
 class _CurrentTargetOptionsMarker:
@@ -101,6 +126,7 @@ def local_array_from(iterable, dtype):
 
 __all__ = [
     "consteval",
+    "constargtype",
     "current_target_options",
     "inline_ptx",
     "intrin",

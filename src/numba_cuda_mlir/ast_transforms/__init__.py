@@ -3,6 +3,7 @@
 # AST transformation passes for numba_cuda_mlir
 # These run before Numba's IR conversion
 import ast
+import inspect
 from typing import Callable
 
 from numba_cuda_mlir.ast_transforms.common import get_function_ast, recompile_function
@@ -18,6 +19,7 @@ from numba_cuda_mlir.ast_transforms.pipeline import (
 
 __all__ = [
     "apply_ast_transforms",
+    "transform_inline_callee",
     "ConstevalError",
     "ASTTransformPass",
     "ASTTransformPipeline",
@@ -129,3 +131,69 @@ def apply_ast_transforms(
         func = recompile_function(func, tree, context.stored_values)
 
     return func, transformed_source
+
+
+# Stands in for each parameter of an inlined callee, whose types are unknown.
+class _InlineeParameter:
+    """Stand in for an inlined callee's parameter, which has no compile-time value.
+
+    We raise on every use of this object, so a consteval that reads a parameter
+    fails instead of folding against it.
+    """
+
+    def __repr__(self):
+        return "<inlined device function parameter>"
+
+    def _fail(self, *args, **kwargs):
+        raise TypeError(
+            "an inlined device function's parameters have no compile-time value; "
+            "use constargtype(parameter) for its type"
+        )
+
+    def __getattr__(self, name):
+        self._fail()
+
+
+for _name in (
+    "__eq__",
+    "__ne__",
+    "__lt__",
+    "__le__",
+    "__gt__",
+    "__ge__",
+    "__bool__",
+    "__hash__",
+    "__len__",
+    "__iter__",
+    "__contains__",
+    "__getitem__",
+    "__call__",
+    "__index__",
+    "__int__",
+    "__float__",
+    "__add__",
+    "__radd__",
+    "__sub__",
+    "__rsub__",
+    "__mul__",
+    "__rmul__",
+    "__truediv__",
+    "__floordiv__",
+    "__mod__",
+    "__and__",
+    "__or__",
+    "__neg__",
+):
+    setattr(_InlineeParameter, _name, _InlineeParameter._fail)
+
+_INLINEE_PARAMETER = _InlineeParameter()
+
+
+def transform_inline_callee(pyfunc: Callable, targetoptions: dict) -> Callable:
+    """Apply AST transforms to an inlinee under the caller's options; parameters resolve to a placeholder."""
+    if not targetoptions.get("experimental_ast_transforms", False):
+        return pyfunc
+
+    argtypes = (_INLINEE_PARAMETER,) * len(inspect.signature(pyfunc).parameters)
+    transformed, _ = apply_ast_transforms(pyfunc, targetoptions, argtypes)
+    return transformed
