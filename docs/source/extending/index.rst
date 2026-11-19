@@ -41,3 +41,4 @@ document.
 
    high-level.rst
    low-level.rst
+   typed-planners.rst
