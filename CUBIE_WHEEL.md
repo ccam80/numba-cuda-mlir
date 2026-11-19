@@ -140,10 +140,14 @@ pip install filecheck pytest-benchmark
 pytest tests/test_kernel_exceptions.py \
        tests/test_descriptor_launch_config.py tests/test_lineinfo.py \
        tests/test_math.py tests/numba_cuda_tests/cudapy/test_fastmath.py \
+       tests/test_dispatcher_lifetime.py tests/test_loop_unroll.py \
+       tests/test_debuginfo.py tests/test_array_view.py \
+       tests/test_record_dtype.py tests/test_post_inline_planners.py \
+       tests/numba_cuda_tests/cudapy/test_sm.py \
        --override-ini="addopts="
 ```
 
-Reference result (0.5.3.1, RTX 4070 SUPER, CUDA 13): cubie 3800/0, fork 247/2xf (plus `tests/test_dispatcher_lifetime.py` and `tests/test_loop_unroll.py`).
+Reference result (0.6.0.1, RTX 4070 SUPER, CUDA 13): cubie 3981 passed; fork 589 passed, 2 skipped, 3 xfailed.
 
 ## Publish
 
