@@ -83,6 +83,21 @@ class FArrayTyping(CArrayTyping):
 registry.register_global(FArrayTyping.key, types.Function(FArrayTyping))
 
 
+class ConstArgTypeTemplate(AbstractTemplate):
+    from numba_cuda_mlir.cuda.experimental import constargtype
+
+    key = constargtype
+
+    def generic(self, args, kws):
+        # We replace every call in ConstArgTypeFolding before full typing, and
+        # type it here only so that the pass's partial typing can step over it.
+        if len(args) == 1 and not kws:
+            return signature(types.none, *args)
+
+
+registry.register_global(ConstArgTypeTemplate.key, types.Function(ConstArgTypeTemplate))
+
+
 @registry.register
 class PrintFunctionTemplate(AbstractTemplate):
     from numba_cuda_mlir.cuda.print import print as print_intrinsic
