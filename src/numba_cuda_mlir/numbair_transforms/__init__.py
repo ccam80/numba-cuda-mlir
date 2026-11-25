@@ -15,6 +15,17 @@ from numba_cuda_mlir.numba_cuda.core.untyped_passes import (
 from numba_cuda_mlir.numba_cuda.core import untyped_passes as untyped_passes_module
 from numba_cuda_mlir.numba_cuda.core.typed_passes import PartialTypeInference
 from numba_cuda_mlir.numba_cuda.core import ir
+from numba_cuda_mlir.numba_cuda.core.inline_closurecall import (
+    InlineWorker,
+    _clone_callee_ir,
+    callee_ir_validator,
+    current_inline_caller,
+)
+from numba_cuda_mlir.numba_cuda.core.ir_utils import (
+    compute_cfg_from_blocks,
+    dead_code_elimination,
+    simplify_CFG,
+)
 from numba_cuda_mlir.numba_cuda.misc.special import literal_unroll
 from numba_cuda_mlir._whole_function_planners import _planner_registry
 
@@ -133,3 +144,106 @@ class PostInlineWholeFunctionPlanners(FunctionPass):
 
     def run_pass(self, state):
         return _planner_registry.apply(state)
+
+
+@register_pass(mutates_CFG=True, analysis_only=False)
+class InlineTypedInlinables(FunctionPass):
+    """Inline calls to inlinable device functions into the typed caller.
+
+    During type inference we type each inlinable call from its callee,
+    transformed and typed for the call's argument types, through the current
+    InlineCaller. Here we splice a clone of that typed callee IR at each call
+    site and copy the callee's types into the caller, so each callee is typed
+    once per signature however many sites call it. We add inlined bodies to the
+    work list so that calls inside them are inlined too.
+    """
+
+    _name = "inline_typed_inlinables"
+
+    def __init__(self):
+        FunctionPass.__init__(self)
+
+    def run_pass(self, state):
+        caller = current_inline_caller()
+        if caller is None or not caller.cache.inlinees:
+            return False
+
+        # Give the worker no typemap so that inline_ir splices the callee without typing it again.
+        inline_worker = InlineWorker(
+            state.typingctx,
+            state.targetctx,
+            state.locals,
+            state.pipeline,
+            state.flags,
+            callee_ir_validator,
+        )
+        modified = False
+        work_list = list(state.func_ir.blocks.items())
+        while work_list:
+            _, block = work_list.pop()
+            for i, instr in enumerate(block.body):
+                if (
+                    isinstance(instr, ir.Assign)
+                    and isinstance(instr.value, ir.Expr)
+                    and instr.value.op == "call"
+                ):
+                    if self._inline_call(state, caller, inline_worker, work_list, block, i):
+                        modified = True
+                        break  # the block was split
+
+        if modified:
+            cfg = compute_cfg_from_blocks(state.func_ir.blocks)
+            for dead in cfg.dead_nodes():
+                del state.func_ir.blocks[dead]
+            dead_code_elimination(state.func_ir, typemap=state.typemap)
+            state.func_ir.blocks = simplify_CFG(state.func_ir.blocks)
+        return modified
+
+    def _inline_call(self, state, caller, inline_worker, work_list, block, i):
+        from numba_cuda_mlir.numba_cuda.compiler import run_frontend
+        from numba_cuda_mlir.numba_cuda.core.options import InlineOptions
+
+        expr = block.body[i].value
+        dispatcher = getattr(state.typemap.get(expr.func.name), "dispatcher", None)
+        signature = state.calltypes.get(expr)
+        if dispatcher is None or signature is None:
+            return False
+        iinfo = caller.inlinee(dispatcher, signature.args)
+        if iinfo is None:
+            return False
+
+        inline_type = dispatcher.targetoptions["inline"]
+        if InlineOptions(inline_type).has_cost_model:
+            if not inline_type(expr, state.func_ir, run_frontend(dispatcher.py_func)):
+                # Lowering calls the compiled function in place of the inlined body.
+                dispatcher._compile_as_device_callee(signature.args)
+                return False
+
+        callee_ir, calltypes = _clone_typed_callee(iinfo)
+        freevars = callee_ir.func_id.func.__code__.co_freevars
+        _, _, var_dict, new_blocks = inline_worker.inline_ir(
+            state.func_ir, block, i, callee_ir, freevars, preserve_ir=False
+        )
+        for name, typ in iinfo.typemap.items():
+            if name.startswith("arg."):
+                continue
+            renamed = var_dict.get(name)
+            state.typemap[name if renamed is None else renamed.name] = typ
+        state.calltypes.update(calltypes)
+        work_list.extend(new_blocks)
+        return True
+
+
+def _clone_typed_callee(iinfo):
+    """Clone a typed callee's IR and key its calltypes by the cloned statements."""
+    callee_ir = _clone_callee_ir(iinfo.func_ir)
+    by_id = {id(key): value for key, value in iinfo.calltypes.items()}
+    calltypes = {}
+    for label, block in iinfo.func_ir.blocks.items():
+        for stmt, clone in zip(block.body, callee_ir.blocks[label].body):
+            if id(stmt) in by_id:
+                calltypes[clone] = by_id[id(stmt)]
+            value = getattr(stmt, "value", None)
+            if isinstance(value, ir.Expr) and id(value) in by_id:
+                calltypes[clone.value] = by_id[id(value)]
+    return callee_ir, calltypes

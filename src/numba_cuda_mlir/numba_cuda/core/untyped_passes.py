@@ -347,7 +347,13 @@ class InlineInlinables(FunctionPass):
             state.pipeline,
             state.flags,
             validator=inline_closurecall.callee_ir_validator,
+            targetoptions=state.metadata.get("targetoptions"),
+            inlinee_transform=state.metadata.get("inlinee_transform"),
         )
+        # Numba shares one instance of each pass, and a callee's own pipeline runs
+        # this pass in the middle of ours, so keep the caller's types on the
+        # worker made for this run.
+        inline_worker.caller_types = None
 
         modified = False
         # use a work list, look for call sites via `ir.Expr.op == call` and
@@ -443,17 +449,86 @@ class InlineInlinables(FunctionPass):
                             do_inline = inline_type(expr, state.func_ir, py_func_ir)
                         # if do_inline is True then inline!
                         if do_inline:
-                            _, _, _, new_blocks = inline_worker.inline_function(
-                                state.func_ir,
-                                block,
-                                i,
-                                pyfunc,
-                            )
+                            new_blocks = self._inline(state, block, i, expr, val, inline_worker)
                             if work_list is not None:
                                 for blk in new_blocks:
                                     work_list.append(blk)
                             return True
         return False
+
+    def _inline(self, state, block, i, expr, dispatcher, inline_worker):
+        """Inline a call, typing it only when the inlinee or one it inlines needs argument types.
+
+        We first transform and inline the callee without argument types. If
+        that callee, or a callee nested inside it, needs argument types, we get
+        InlineeNeedsArgTypes from its untyped run before touching the caller's
+        IR, and we inline it again for the types of this call.
+        """
+        function = self._untyped_inlinee(dispatcher, inline_worker)
+        if function is not None:
+            try:
+                return inline_worker.inline_function(state.func_ir, block, i, function)[3]
+            except inline_closurecall.InlineeNeedsArgTypes:
+                inline_closurecall.current_inline_caller().cache.needs_arg_types.add(
+                    dispatcher.py_func
+                )
+        if any(isinstance(argtype, types.PyObject) for argtype in state.args):
+            # We are inside an inlinee's untyped run, so pass the need up to our caller.
+            raise inline_closurecall.InlineeNeedsArgTypes(dispatcher.py_func.__name__)
+        function, args = self._transformed_inlinee(state, expr, dispatcher, inline_worker)
+        return inline_worker.inline_function(state.func_ir, block, i, function, args=args)[3]
+
+    def _untyped_inlinee(self, dispatcher, inline_worker):
+        """The inlinee transformed without argument types, or None if it needs them."""
+        if inline_worker.inlinee_transform is None:
+            return dispatcher.py_func
+        caller = inline_closurecall.current_inline_caller()
+        if dispatcher.py_func in caller.cache.needs_arg_types:
+            return None
+        return inline_worker.transform_inlinee(dispatcher.py_func, None)
+
+    def _transformed_inlinee(self, state, expr, dispatcher, inline_worker):
+        """The inlinee transformed for its call's folded argument types, and those types."""
+        if inline_worker.caller_types is None:
+            inline_worker.caller_types = self._type_caller(state, inline_worker)
+        typemap, typing_errors = inline_worker.caller_types
+
+        argtypes = [typemap.get(var.name, types.unknown) for var in expr.args]
+        kwtypes = {name: typemap.get(var.name, types.unknown) for name, var in expr.kws}
+        if types.unknown in argtypes or types.unknown in kwtypes.values():
+            # Raise what typing the caller raises
+            for error in typing_errors or ():
+                if isinstance(error, errors.TypingError):
+                    raise error
+            raise errors.TypingError(
+                f"Cannot determine the argument types of the call to {dispatcher.py_func.__name__}",
+                loc=expr.loc,
+            )
+        _, folded = dispatcher._compiler.fold_argument_types(argtypes, kwtypes)
+        folded = tuple(folded)
+        return inline_worker.transform_inlinee(dispatcher.py_func, folded), folded
+
+    def _type_caller(self, state, inline_worker):
+        """Partially type the caller, typing each inlinable call from its transformed callee."""
+        from numba_cuda_mlir.numba_cuda.core.typed_passes import type_inference_stage
+
+        enclosing = inline_closurecall.current_inline_caller()
+        with inline_closurecall.inline_caller(
+            inline_worker.targetoptions,
+            inline_worker.inlinee_transform,
+            worker=inline_worker,
+            cache=None if enclosing is None else enclosing.cache,
+        ):
+            typemap, _, _, typing_errors = type_inference_stage(
+                state.typingctx,
+                state.targetctx,
+                state.func_ir,
+                state.args,
+                None,
+                state.locals,
+                raise_errors=False,
+            )
+        return typemap, typing_errors
 
 
 @register_pass(mutates_CFG=False, analysis_only=False)
