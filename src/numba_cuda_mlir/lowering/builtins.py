@@ -49,20 +49,15 @@ ufunc_registry = UFuncRegistry("builtins")
 
 
 def _get_range_object(builder, args, int_type) -> tuple[ir.Value, ir.Value, ir.Value]:
-    """Load the range bounds converted to the range's resolved integer type."""
+    """Load the range bounds, creating a missing start or step in the range's integer type."""
     int_mlir_type = builder.get_mlir_type(int_type)
-
-    def bound(var):
-        signed = get_conversion_signedness(builder.get_numba_type(var.name), int_type)
-        return int_of(builder.load_var(var), ty=int_mlir_type, signed=signed)
-
     match args:
         case [stop]:
-            return int_of(0, ty=int_mlir_type), bound(stop), int_of(1, ty=int_mlir_type)
+            return int_of(0, ty=int_mlir_type), builder.load_var(stop), int_of(1, ty=int_mlir_type)
         case [start, stop]:
-            return bound(start), bound(stop), int_of(1, ty=int_mlir_type)
+            return builder.load_var(start), builder.load_var(stop), int_of(1, ty=int_mlir_type)
         case [start, stop, step]:
-            return bound(start), bound(stop), bound(step)
+            return builder.load_var(start), builder.load_var(stop), builder.load_var(step)
         case _:
             raise ValueError(f"Invalid arguments for range: {args}")
 
