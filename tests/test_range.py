@@ -116,8 +116,21 @@ def test_range_reuse():
     assert out.copy_to_host()[0] == 48
 
 
+def test_range_float_bounds():
+    @cuda.jit
+    def k(bounds, x):
+        for i in range(bounds[0], bounds[1]):
+            x[0] += i
+
+    x = cuda.to_device(np.zeros(1, dtype=np.int64))
+    k[1, 1](cuda.to_device(np.array([2.0, 6.0])), x)
+    x = x.copy_to_host()
+    assert x[0] == sum(range(2, 6))
+
+
 if __name__ == "__main__":
     test_range1()
     test_range2()
     test_range3()
     test_range_neg_stride()
+    test_range_float_bounds()

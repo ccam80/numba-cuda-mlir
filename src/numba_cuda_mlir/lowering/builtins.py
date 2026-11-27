@@ -48,33 +48,16 @@ from .ufunc_registry import UFuncRegistry
 ufunc_registry = UFuncRegistry("builtins")
 
 
-def _get_range_object(builder, args: list[ir.Value]) -> tuple[ir.Value, ir.Value, ir.Value]:
+def _get_range_object(builder, args, int_type) -> tuple[ir.Value, ir.Value, ir.Value]:
+    """Load the range bounds, creating a missing start or step in the range's integer type."""
+    int_mlir_type = builder.get_mlir_type(int_type)
     match args:
         case [stop]:
-            stop_type = builder.get_mlir_type(stop)
-            return (
-                int_of(0, ty=stop_type),
-                int_of(builder.load_var(stop), ty=stop_type, signed=True),
-                int_of(1, ty=stop_type),
-            )
+            return int_of(0, ty=int_mlir_type), builder.load_var(stop), int_of(1, ty=int_mlir_type)
         case [start, stop]:
-            start_type = builder.get_mlir_type(start)
-            stop_type = builder.get_mlir_type(stop)
-            return (
-                int_of(builder.load_var(start), ty=start_type, signed=True),
-                int_of(builder.load_var(stop), ty=stop_type, signed=True),
-                int_of(1, ty=stop_type),
-            )
+            return builder.load_var(start), builder.load_var(stop), int_of(1, ty=int_mlir_type)
         case [start, stop, step]:
-            return (
-                int_of(
-                    builder.load_var(start),
-                    ty=builder.get_mlir_type(start),
-                    signed=True,
-                ),
-                int_of(builder.load_var(stop), ty=builder.get_mlir_type(stop), signed=True),
-                int_of(builder.load_var(step), ty=builder.get_mlir_type(step), signed=True),
-            )
+            return builder.load_var(start), builder.load_var(stop), builder.load_var(step)
         case _:
             raise ValueError(f"Invalid arguments for range: {args}")
 
@@ -165,8 +148,8 @@ def lower_tuple_ne(builder, target, args, kwargs):
 @lower(range, types.Number, types.Number)
 @lower(range, types.Number, types.Number, types.Number)
 def lower_range(builder: MLIRLower, target, args, kwargs):
-    start, stop, step = _get_range_object(builder, args)
     dtype = builder.get_numba_type(target.name).dtype
+    start, stop, step = _get_range_object(builder, args, dtype)
     element_type = builder.get_mlir_type(dtype)
     source_types = [builder.get_numba_type(arg.name) for arg in args]
     if len(args) == 1:
